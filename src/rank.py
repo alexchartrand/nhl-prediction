@@ -89,18 +89,27 @@ def add_vorp(df: pd.DataFrame, teams: int = TEAMS_IN_POOL, roster: dict = ROSTER
     return pd.concat(ranked, ignore_index=True)
 
 
-def build_draft_board(fetch_live_team_changes: bool = True) -> pd.DataFrame:
+def build_draft_board(
+    fetch_live_team_changes: bool = True,
+    teams: int = TEAMS_IN_POOL,
+    roster: dict = ROSTER_SLOTS,
+) -> pd.DataFrame:
     """``fetch_live_team_changes=False`` skips the live NHL API roster check
     (see nhl_api.py) for a fully deterministic, network-free board -- used
     by tests. Live data only ever adds the 'New Team' note; a failed or
-    skipped fetch degrades to no team-change tags, nothing else changes."""
+    skipped fetch degrades to no team-change tags, nothing else changes.
+
+    ``teams``/``roster`` set the pool size and F/D roster slots that drive
+    the VORP replacement level (see add_vorp) -- callers with a
+    league-specific pool size (see draft_state settings) should pass their
+    own instead of relying on the module defaults."""
     df_all = load_scored_seasons()
     pairs = loading.make_training_pairs(
         df_all, feature_cols=FEATURE_COLS + ["Player", "pos_group"], min_feature_gp=MIN_GP
     )
     models = fit_production_models(pairs)
     predicted = predict_upcoming(models, df_all)
-    ranked = add_vorp(predicted)
+    ranked = add_vorp(predicted, teams=teams, roster=roster)
     ranked = notable.add_notable_flags(ranked, df_all, LATEST_SEASON)
 
     team_map, team_fetch_complete = {}, True

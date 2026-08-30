@@ -19,13 +19,21 @@ import rank
 _MULTI_TEAM = re.compile(r"^\d+TM$")
 
 
-def undrafted_board(board: pd.DataFrame, drafted_ids: set[str]) -> pd.DataFrame:
+def undrafted_board(
+    board: pd.DataFrame,
+    drafted_ids: set[str],
+    teams: int = rank.TEAMS_IN_POOL,
+    roster: dict = rank.ROSTER_SLOTS,
+) -> pd.DataFrame:
     """``board`` (from ``rank.build_draft_board()``) minus drafted players,
     with pos_rank/VORP/replacement_level recomputed on who's left -- so
-    replacement level shifts as a position gets drafted down."""
+    replacement level shifts as a position gets drafted down. ``teams``/
+    ``roster`` must match what the board was built with (see draft_state
+    settings) or the replacement level drifts from the one the board's own
+    VORP column was computed against."""
     remaining = board[~board["player_id"].isin(drafted_ids)].copy()
     remaining = remaining.drop(columns=["pos_rank", "VORP", "replacement_level"], errors="ignore")
-    return rank.add_vorp(remaining).sort_values("VORP", ascending=False).reset_index(drop=True)
+    return rank.add_vorp(remaining, teams=teams, roster=roster).sort_values("VORP", ascending=False).reset_index(drop=True)
 
 
 def goalie_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:

@@ -34,22 +34,32 @@ HISTORY_COLS = ["season", "Team", "Pos", "GP", "G", "A", "PTS", "SOG", "PPG", "P
 st.set_page_config(page_title="Draft Assistant", layout="wide")
 
 
-BOARD_PATH = rank.OUTPUT_PATH
+def board_path(season: str) -> Path:
+    """Each season's board is persisted separately -- its VORP/pos_rank
+    columns bake in that season's num_managers/forwards/defense settings
+    (see draft_state.load_settings), so one season's board can't double as
+    another's."""
+    return rank.OUTPUT_PATH.parent / f"draft_board_{draft_state.slugify(season)}.csv"
 
 
-def _rebuild_board() -> pd.DataFrame:
-    board = rank.build_draft_board()
-    BOARD_PATH.parent.mkdir(exist_ok=True)
-    board.to_csv(BOARD_PATH, index=False)
+def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
+    board = rank.build_draft_board(
+        teams=settings["num_managers"],
+        roster={"F": settings["forwards"], "D": settings["defense"]},
+    )
+    path = board_path(season)
+    path.parent.mkdir(exist_ok=True)
+    board.to_csv(path, index=False)
     st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
     return board
 
 
 @st.cache_data
-def get_board() -> pd.DataFrame:
-    if BOARD_PATH.exists():
-        return pd.read_csv(BOARD_PATH)
-    return _rebuild_board()
+def get_board(season: str, settings: dict) -> pd.DataFrame:
+    path = board_path(season)
+    if path.exists():
+        return pd.read_csv(path)
+    return _rebuild_board(season, settings)
 
 
 @st.cache_data
@@ -67,13 +77,58 @@ def get_teams(_all_seasons: pd.DataFrame) -> pd.DataFrame:
     return draft_pool.team_pool(_all_seasons)
 
 
+NEW_SEASON_OPTION = "+ New season..."
+
+
+def season_picker() -> str | None:
+    """Sidebar control to create a new season or switch to an existing one.
+    All draft state (picks, managers) is scoped to the returned season, so
+    a fresh pool year starts clean while past drafts stay intact and
+    reloadable. Selection is stuck in the URL query params so a browser
+    refresh doesn't drop back to "no season selected".
+
+    The selectbox's own widget state (key "season_select") is the single
+    source of truth for the current selection. Streamlit forbids writing to
+    a keyed widget's session_state after it's been instantiated in the same
+    run, so switching the dropdown to a just-created season is staged via
+    "_pending_season" and applied at the top of the *next* run, before the
+    widget is instantiated.
+    """
+    seasons = draft_state.list_seasons()
+
+    pending = st.session_state.pop("_pending_season", None)
+    if pending is not None:
+        st.session_state["season_select"] = pending
+
+    st.sidebar.subheader("Season")
+    options = seasons + [NEW_SEASON_OPTION]
+    if "season_select" not in st.session_state:
+        query_season = st.query_params.get("season")
+        st.session_state["season_select"] = query_season if query_season in seasons else (
+            seasons[0] if seasons else NEW_SEASON_OPTION
+        )
+    choice = st.sidebar.selectbox("Draft season", options, key="season_select")
+
+    if choice == NEW_SEASON_OPTION:
+        new_name = st.sidebar.text_input("New season name (e.g. 2026-2027)", key="new_season_name")
+        if st.sidebar.button("Create season") and new_name.strip():
+            season = draft_state.create_season(new_name.strip())
+            st.session_state["_pending_season"] = season
+            st.query_params["season"] = season
+            st.rerun()
+        return None
+
+    st.query_params["season"] = choice
+    return choice
+
+
 def manager_options(managers: dict) -> tuple[list[str], dict[str, str]]:
     options = ["me"] + managers.get("other_managers", [])
     labels = {"me": managers.get("my_team_name", "me")}
     return options, labels
 
 
-def manager_setup_form(existing: dict | None) -> None:
+def manager_setup_form(season: str, existing: dict | None) -> None:
     container = st.sidebar.expander("Edit managers", expanded=False) if existing else st.sidebar
     with container:
         if not existing:
@@ -85,7 +140,44 @@ def manager_setup_form(existing: dict | None) -> None:
             submitted = st.form_submit_button("Save")
         if submitted:
             others = [line.strip() for line in others_text.splitlines() if line.strip()]
-            draft_state.save_managers(my_team, others)
+            draft_state.save_managers(season, my_team, others)
+            st.rerun()
+
+
+def settings_form(season: str, existing: dict) -> None:
+    """League shape for this season: pool size (drives the VORP replacement
+    level, see rank.add_vorp) and roster slots (drive both VORP and the "My
+    Pool" progress tracker). Changing these doesn't retroactively rewrite an
+    already-computed board -- hit "Recompute draft board" afterwards."""
+    with st.sidebar.expander("League settings", expanded=False):
+        with st.form("settings_form"):
+            num_managers = st.number_input(
+                "Number of managers", min_value=2, max_value=30, value=existing["num_managers"], step=1
+            )
+            forwards = st.number_input(
+                "Forward roster slots", min_value=1, max_value=20, value=existing["forwards"], step=1
+            )
+            defense = st.number_input(
+                "Defense roster slots", min_value=1, max_value=20, value=existing["defense"], step=1
+            )
+            goalies = st.number_input(
+                "Goalie roster slots", min_value=0, max_value=10, value=existing["goalies"], step=1
+            )
+            team_slots = st.number_input(
+                "Team roster slots", min_value=0, max_value=10, value=existing["team_slots"], step=1
+            )
+            submitted = st.form_submit_button("Save")
+        if submitted:
+            draft_state.save_settings(
+                season,
+                {
+                    "num_managers": num_managers,
+                    "forwards": forwards,
+                    "defense": defense,
+                    "goalies": goalies,
+                    "team_slots": team_slots,
+                },
+            )
             st.rerun()
 
 
@@ -156,12 +248,12 @@ def render_compare_and_explore(df: pd.DataFrame, all_seasons: pd.DataFrame, key_
         st.markdown(st.session_state[result_key])
 
 
-def pick_form(player_id: str, player_name: str, pos_group: str, options: list[str], labels: dict, key_prefix: str) -> None:
+def pick_form(season: str, player_id: str, player_name: str, pos_group: str, options: list[str], labels: dict, key_prefix: str) -> None:
     with st.form(f"{key_prefix}_pick_form"):
         manager = st.selectbox("Drafted by", options, format_func=lambda m: labels.get(m, m), key=f"{key_prefix}_manager")
         submitted = st.form_submit_button(f"Draft {player_name}")
     if submitted:
-        draft_state.add_pick(player_id, player_name, pos_group, manager)
+        draft_state.add_pick(season, player_id, player_name, pos_group, manager)
         st.rerun()
 
 
@@ -180,9 +272,13 @@ def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str)
     return df.iloc[rows[0]] if rows else None
 
 
-def forwards_defense_tab(board: pd.DataFrame, all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
-    drafted = draft_state.drafted_player_ids()
-    available = draft_pool.undrafted_board(board, drafted)
+def forwards_defense_tab(
+    season: str, board: pd.DataFrame, all_seasons: pd.DataFrame, options: list[str], labels: dict, settings: dict
+) -> None:
+    drafted = draft_state.drafted_player_ids(season)
+    available = draft_pool.undrafted_board(
+        board, drafted, teams=settings["num_managers"], roster={"F": settings["forwards"], "D": settings["defense"]}
+    )
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -204,13 +300,13 @@ def forwards_defense_tab(board: pd.DataFrame, all_seasons: pd.DataFrame, options
     if selected is not None:
         st.divider()
         render_history(selected["player_id"], selected["Player"], selected["pos_group"], all_seasons)
-        pick_form(selected["player_id"], selected["Player"], selected["pos_group"], options, labels, key_prefix="fd")
+        pick_form(season, selected["player_id"], selected["Player"], selected["pos_group"], options, labels, key_prefix="fd")
 
     st.divider()
     render_compare_and_explore(filtered, all_seasons, key_prefix="fd")
 
     with st.expander("Show drafted forwards/defense"):
-        picks = draft_state.load_picks()
+        picks = draft_state.load_picks(season)
         drafted_board = board[board["player_id"].isin(drafted)].merge(
             picks[["player_id", "manager", "pick_number"]], on="player_id", how="left"
         )
@@ -222,8 +318,8 @@ def forwards_defense_tab(board: pd.DataFrame, all_seasons: pd.DataFrame, options
         )
 
 
-def goalies_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
-    drafted = draft_state.drafted_player_ids()
+def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
+    drafted = draft_state.drafted_player_ids(season)
     goalies = get_goalies(all_seasons)
     goalies = goalies[~goalies["player_id"].isin(drafted)]
 
@@ -239,13 +335,13 @@ def goalies_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> 
     if selected is not None:
         st.divider()
         render_history(selected["player_id"], selected["Player"], "G", all_seasons)
-        pick_form(selected["player_id"], selected["Player"], "G", options, labels, key_prefix="g")
+        pick_form(season, selected["player_id"], selected["Player"], "G", options, labels, key_prefix="g")
 
     st.divider()
     render_compare_and_explore(goalies, all_seasons, key_prefix="g")
 
     with st.expander("Show drafted goalies"):
-        picks = draft_state.load_picks()
+        picks = draft_state.load_picks(season)
         drafted_goalies = picks[picks["pos_group"] == "G"].sort_values("pick_number").copy()
         drafted_goalies["manager"] = drafted_goalies["manager"].map(lambda m: labels.get(m, m))
         st.dataframe(
@@ -255,8 +351,8 @@ def goalies_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> 
         )
 
 
-def teams_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
-    drafted = draft_state.drafted_player_ids()
+def teams_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
+    drafted = draft_state.drafted_player_ids(season)
     teams = get_teams(all_seasons)
     teams = teams[~teams["player_id"].isin(drafted)]
 
@@ -271,10 +367,10 @@ def teams_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> No
 
     if selected is not None:
         st.divider()
-        pick_form(selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
+        pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
 
     with st.expander("Show drafted teams"):
-        picks = draft_state.load_picks()
+        picks = draft_state.load_picks(season)
         drafted_teams = picks[picks["pos_group"] == "TEAM"].sort_values("pick_number").copy()
         drafted_teams["manager"] = drafted_teams["manager"].map(lambda m: labels.get(m, m))
         st.dataframe(
@@ -284,17 +380,22 @@ def teams_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> No
         )
 
 
-ROSTER_TARGETS = {"F": 9, "D": 5, "G": 1, "TEAM": 1}
 POS_GROUP_LABELS = {"F": "Forwards", "D": "Defense", "G": "Goalie", "TEAM": "Team"}
 
 
-def my_pool_tab(labels: dict) -> None:
-    picks = draft_state.load_picks()
+def my_pool_tab(season: str, labels: dict, settings: dict) -> None:
+    roster_targets = {
+        "F": settings["forwards"],
+        "D": settings["defense"],
+        "G": settings["goalies"],
+        "TEAM": settings["team_slots"],
+    }
+    picks = draft_state.load_picks(season)
     mine = picks[picks["manager"] == "me"].sort_values("pick_number")
 
     st.subheader(labels.get("me", "me"))
-    cols = st.columns(len(ROSTER_TARGETS))
-    for col, (pos, target) in zip(cols, ROSTER_TARGETS.items()):
+    cols = st.columns(len(roster_targets))
+    for col, (pos, target) in zip(cols, roster_targets.items()):
         have = (mine["pos_group"] == pos).sum()
         col.metric(POS_GROUP_LABELS[pos], f"{have}/{target}")
 
@@ -314,8 +415,8 @@ def my_pool_tab(labels: dict) -> None:
         )
 
 
-def draft_log_tab(labels: dict) -> None:
-    picks = draft_state.load_picks().sort_values("pick_number", ascending=False).copy()
+def draft_log_tab(season: str, labels: dict) -> None:
+    picks = draft_state.load_picks(season).sort_values("pick_number", ascending=False).copy()
     if picks.empty:
         st.write("No picks yet.")
         return
@@ -330,26 +431,35 @@ def draft_log_tab(labels: dict) -> None:
 def main() -> None:
     st.title("Draft Assistant")
 
-    managers = draft_state.load_managers()
+    season = season_picker()
+    if not season:
+        st.info("Create or select a season in the sidebar to begin.")
+        return
+    st.caption(f"Season: {season}")
+
+    managers = draft_state.load_managers(season)
     if not managers:
-        manager_setup_form(None)
+        manager_setup_form(season, None)
         st.info("Set up your league in the sidebar to begin.")
         return
 
-    manager_setup_form(managers)
+    manager_setup_form(season, managers)
+    settings = draft_state.load_settings(season)
+    settings_form(season, settings)
     options, labels = manager_options(managers)
 
     st.sidebar.divider()
     if st.sidebar.button("Undo last pick"):
-        draft_state.undo_last_pick()
+        draft_state.undo_last_pick(season)
         st.rerun()
 
-    if BOARD_PATH.exists():
-        updated = pd.Timestamp(BOARD_PATH.stat().st_mtime, unit="s").strftime("%Y-%m-%d %H:%M")
+    path = board_path(season)
+    if path.exists():
+        updated = pd.Timestamp(path.stat().st_mtime, unit="s").strftime("%Y-%m-%d %H:%M")
         st.sidebar.caption(f"Draft board last computed: {updated}")
     if st.sidebar.button("Recompute draft board"):
         with st.spinner("Recomputing draft board (refits models, hits the live NHL API)..."):
-            _rebuild_board()
+            _rebuild_board(season, settings)
         get_board.clear()
         st.rerun()
     if st.session_state.get("team_fetch_complete") is False:
@@ -358,29 +468,29 @@ def main() -> None:
             "'New Team' tags may be missing. Recompute again in a bit."
         )
 
-    picks = draft_state.load_picks()
+    picks = draft_state.load_picks(season)
     if not picks.empty:
         last = picks.sort_values("pick_number").iloc[-1]
         st.sidebar.caption(
             f"Last pick: #{int(last['pick_number'])} {last['player_name']} → {labels.get(last['manager'], last['manager'])}"
         )
 
-    board = get_board()
+    board = get_board(season, settings)
     all_seasons = get_all_seasons()
 
     tab_fd, tab_g, tab_teams, tab_mypool, tab_log = st.tabs(
         ["Forwards & Defense", "Goalies", "Teams", "My Pool", "Draft Log"]
     )
     with tab_fd:
-        forwards_defense_tab(board, all_seasons, options, labels)
+        forwards_defense_tab(season, board, all_seasons, options, labels, settings)
     with tab_g:
-        goalies_tab(all_seasons, options, labels)
+        goalies_tab(season, all_seasons, options, labels)
     with tab_teams:
-        teams_tab(all_seasons, options, labels)
+        teams_tab(season, all_seasons, options, labels)
     with tab_mypool:
-        my_pool_tab(labels)
+        my_pool_tab(season, labels, settings)
     with tab_log:
-        draft_log_tab(labels)
+        draft_log_tab(season, labels)
 
 
 if __name__ == "__main__":
