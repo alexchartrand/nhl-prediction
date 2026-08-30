@@ -1,0 +1,28 @@
+Rk -- Rank
+Age -- As of Jan. 31 of the season in question.
+Pos -- Position
+GP -- Games Played
+G -- Goals
+A -- Assists
+PTS -- Points
++/- -- 'Plus/Minus' calculated by subtracting the total number of goals allowed by a player's team while the player is on the ice (at even strength or on the power play) from the total number of goals scored by the player's team while the player is on the ice (at even strength or short-handed).
+PIM -- Penalties in Minutes
+EVG -- Even Strength Goals
+PPG -- Power Play Goals
+SHG -- Short-Handed Goals
+GWG -- Game-Winning Goals
+EV -- Even Strength Assists
+PP -- Power Play Assists
+SH -- Shorthanded Assists
+SOG -- Shots on Goal
+SPCT -- Shooting Percentage
+TSA -- Total Shots Attempted
+TOI -- Time on Ice (in minutes)
+ATOI -- Average Time on Ice
+FOW -- Faceoff Wins
+FOL -- Faceoff Losses
+FO% -- Faceoff Percentage
+BLK -- Blocks
+HIT -- Hits
+TAKE -- Takeaways
+GIVE -- Giveaways
