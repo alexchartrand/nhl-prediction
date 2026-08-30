@@ -189,33 +189,14 @@ def player_history(player_id: str, pos_group: str, all_seasons: pd.DataFrame) ->
     return hist[cols]
 
 
-def render_history(player_id: str, player_name: str, pos_group: str, all_seasons: pd.DataFrame) -> None:
-    with st.expander(f"{player_name} — season history"):
-        hist = player_history(player_id, pos_group, all_seasons)
-        if hist.empty:
-            st.write("No season history found.")
-            return
-        st.dataframe(hist, hide_index=True, width="stretch")
-
-
-def render_compare_and_explore(df: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: str) -> None:
-    """Lets the user pick up to 3 players from ``df`` to see season history
-    side by side, and optionally hit "Explore" to have Mistral web-search
-    their current news/injury/form and summarize (1 player) or recommend a
-    pick between them (2-3 players)."""
-    names = st.multiselect(
-        "Compare players (up to 3) -- see history side by side, or Explore for live news/injury info",
-        options=df["Player"].tolist(),
-        max_selections=3,
-        key=f"{key_prefix}_compare",
-    )
-    if not names:
-        return
-
-    rows = [df[df["Player"] == name].iloc[0] for name in names]
+def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: str) -> None:
+    """Shows season history side by side for the players checked in the draft
+    list above (up to 3), and optionally hits "Explore" to have Mistral
+    web-search their current news/injury/form and summarize (1 player) or
+    recommend a pick between them (2-3 players)."""
     cols = st.columns(len(rows))
     chart_series = []
-    for col, row in zip(cols, rows):
+    for col, (_, row) in zip(cols, rows.iterrows()):
         pos_group = row.get("pos_group", "G")
         hist = player_history(row["player_id"], pos_group, all_seasons)
         with col:
@@ -235,7 +216,7 @@ def render_compare_and_explore(df: pd.DataFrame, all_seasons: pd.DataFrame, key_
     if st.button("Explore", key=f"{key_prefix}_explore_btn"):
         contexts = [
             explore.build_player_context(row, player_history(row["player_id"], row.get("pos_group", "G"), all_seasons))
-            for row in rows
+            for _, row in rows.iterrows()
         ]
         with st.spinner("Searching the web and summarizing..."):
             try:
@@ -257,19 +238,49 @@ def pick_form(season: str, player_id: str, player_name: str, pos_group: str, opt
         st.rerun()
 
 
-def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str):
-    """Renders df[display_cols] with single-row selection; returns the
-    selected row (full row, from df, not just the displayed columns) or None."""
+def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str, selection_mode: str = "single-row"):
+    """Renders df[display_cols] with row selection (checkboxes appear in the
+    row selector column when selection_mode is "multi-row"). Returns the
+    selected row(s) (full row(s), from df, not just the displayed columns) --
+    a single row or None for "single-row", a DataFrame for "multi-row"."""
     event = st.dataframe(
         df[display_cols],
         hide_index=True,
         width="stretch",
         on_select="rerun",
-        selection_mode="single-row",
+        selection_mode=selection_mode,
         key=key,
     )
     rows = event.selection.rows if event and event.selection else []
+    if selection_mode == "multi-row":
+        return df.iloc[rows]
     return df.iloc[rows[0]] if rows else None
+
+
+def table_key(base_key: str) -> str:
+    """The dataframe widget's key includes a version suffix bumped by
+    uncheck_all_button -- popping the base key from session_state doesn't
+    reset the frontend's own row-selection UI (it's a custom component that
+    doesn't resync from a cleared backend value), so the only reliable way to
+    actually clear checked rows is to remount the widget under a brand new
+    key."""
+    return f"{base_key}_v{st.session_state.get(f'{base_key}_version', 0)}"
+
+
+def selection_rows(base_key: str) -> list[int]:
+    """Reads a dataframe widget's current selection from session_state *before*
+    the widget is (re-)instantiated later in the script -- Streamlit updates
+    session_state for the key that triggered a rerun before the script starts
+    running again, so this reflects the just-clicked checkbox even though the
+    table itself renders further down the page."""
+    state = st.session_state.get(table_key(base_key))
+    return list(state.selection.rows) if state else []
+
+
+def uncheck_all_button(base_key: str, label: str = "Uncheck all") -> None:
+    if st.button(label, key=f"{base_key}_uncheck_all"):
+        st.session_state[f"{base_key}_version"] = st.session_state.get(f"{base_key}_version", 0) + 1
+        st.rerun()
 
 
 def forwards_defense_tab(
@@ -280,12 +291,8 @@ def forwards_defense_tab(
         board, drafted, teams=settings["num_managers"], roster={"F": settings["forwards"], "D": settings["defense"]}
     )
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        pos_filter = st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
-    with col2:
-        name_query = st.text_input("Search player name", key="fd_name_query")
-
+    pos_filter = st.session_state.get("fd_pos_filter", "All")
+    name_query = st.session_state.get("fd_name_query", "")
     filtered = available
     if pos_filter != "All":
         filtered = filtered[filtered["pos_group"] == pos_filter]
@@ -293,17 +300,29 @@ def forwards_defense_tab(
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
     filtered = filtered.reset_index(drop=True)
 
-    display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "pos_rank", "VORP"]
-    selected = render_selectable_table(filtered, display_cols, key="fd_table")
-    st.caption(f"{len(filtered)} available players shown")
+    rows = [r for r in selection_rows("fd_table") if r < len(filtered)]
+    selected = filtered.iloc[rows]
+    if len(selected) > 3:
+        st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
+        selected = selected.iloc[:3]
 
-    if selected is not None:
+    if not selected.empty:
+        uncheck_all_button("fd_table")
+        render_compare(selected, all_seasons, key_prefix="fd")
+        if len(selected) == 1:
+            row = selected.iloc[0]
+            pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd")
         st.divider()
-        render_history(selected["player_id"], selected["Player"], selected["pos_group"], all_seasons)
-        pick_form(season, selected["player_id"], selected["Player"], selected["pos_group"], options, labels, key_prefix="fd")
 
-    st.divider()
-    render_compare_and_explore(filtered, all_seasons, key_prefix="fd")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
+    with col2:
+        st.text_input("Search player name", key="fd_name_query")
+
+    display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "pos_rank", "VORP"]
+    st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
+    render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
 
     with st.expander("Show drafted forwards/defense"):
         picks = draft_state.load_picks(season)
@@ -323,22 +342,30 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
     goalies = get_goalies(all_seasons)
     goalies = goalies[~goalies["player_id"].isin(drafted)]
 
-    name_query = st.text_input("Search goalie name", key="g_name_query")
+    name_query = st.session_state.get("g_name_query", "")
     if name_query:
         goalies = goalies[goalies["Player"].str.contains(name_query, case=False, na=False)]
     goalies = goalies.reset_index(drop=True)
 
-    display_cols = ["Player", "Team", "GP", "feature_season", "seasons_back"]
-    selected = render_selectable_table(goalies, display_cols, key="g_table")
-    st.caption(f"{len(goalies)} available goalies shown")
+    rows = [r for r in selection_rows("g_table") if r < len(goalies)]
+    selected = goalies.iloc[rows]
+    if len(selected) > 3:
+        st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
+        selected = selected.iloc[:3]
 
-    if selected is not None:
+    if not selected.empty:
+        uncheck_all_button("g_table")
+        render_compare(selected, all_seasons, key_prefix="g")
+        if len(selected) == 1:
+            row = selected.iloc[0]
+            pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g")
         st.divider()
-        render_history(selected["player_id"], selected["Player"], "G", all_seasons)
-        pick_form(season, selected["player_id"], selected["Player"], "G", options, labels, key_prefix="g")
 
-    st.divider()
-    render_compare_and_explore(goalies, all_seasons, key_prefix="g")
+    st.text_input("Search goalie name", key="g_name_query")
+
+    display_cols = ["Player", "Team", "GP", "feature_season", "seasons_back"]
+    st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
+    render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
     with st.expander("Show drafted goalies"):
         picks = draft_state.load_picks(season)
@@ -356,18 +383,23 @@ def teams_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels
     teams = get_teams(all_seasons)
     teams = teams[~teams["player_id"].isin(drafted)]
 
-    name_query = st.text_input("Search team name", key="team_name_query")
+    name_query = st.session_state.get("team_name_query", "")
     if name_query:
         teams = teams[teams["Team"].str.contains(name_query, case=False, na=False)]
     teams = teams.reset_index(drop=True)
 
-    display_cols = ["Team", "Code"]
-    selected = render_selectable_table(teams, display_cols, key="team_table")
-    st.caption(f"{len(teams)} available teams shown")
-
-    if selected is not None:
-        st.divider()
+    rows = [r for r in selection_rows("team_table") if r < len(teams)]
+    if rows:
+        selected = teams.iloc[rows[0]]
+        uncheck_all_button("team_table", label="Clear selection")
         pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
+        st.divider()
+
+    st.text_input("Search team name", key="team_name_query")
+
+    display_cols = ["Team", "Code"]
+    st.caption(f"{len(teams)} available teams shown")
+    render_selectable_table(teams, display_cols, key=table_key("team_table"))
 
     with st.expander("Show drafted teams"):
         picks = draft_state.load_picks(season)
