@@ -22,8 +22,14 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import draft_pool
 import draft_state
+import explore
 import features
 import rank
+
+# First three slots of the validated categorical palette (dataviz skill) --
+# these three pass the CVD/contrast floors together in both light and dark.
+COMPARE_LINE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+HISTORY_COLS = ["season", "Team", "Pos", "GP", "G", "A", "PTS", "SOG", "PPG", "PP"]
 
 st.set_page_config(page_title="Draft Assistant", layout="wide")
 
@@ -82,16 +88,71 @@ def manager_setup_form(existing: dict | None) -> None:
             st.rerun()
 
 
+def player_history(player_id: str, pos_group: str, all_seasons: pd.DataFrame) -> pd.DataFrame:
+    hist = all_seasons[all_seasons["player_id"] == player_id].sort_values("season", ascending=False)
+    if hist.empty:
+        return hist
+    cols = HISTORY_COLS + (["fantasy_points"] if pos_group != "G" else [])
+    return hist[cols]
+
+
 def render_history(player_id: str, player_name: str, pos_group: str, all_seasons: pd.DataFrame) -> None:
     with st.expander(f"{player_name} — season history"):
-        hist = all_seasons[all_seasons["player_id"] == player_id].sort_values("season", ascending=False)
+        hist = player_history(player_id, pos_group, all_seasons)
         if hist.empty:
             st.write("No season history found.")
             return
-        cols = ["season", "Team", "Pos", "GP", "G", "A", "PTS", "SOG", "PPG", "PP"]
-        if pos_group != "G":
-            cols.append("fantasy_points")
-        st.dataframe(hist[cols], hide_index=True, width="stretch")
+        st.dataframe(hist, hide_index=True, width="stretch")
+
+
+def render_compare_and_explore(df: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: str) -> None:
+    """Lets the user pick up to 3 players from ``df`` to see season history
+    side by side, and optionally hit "Explore" to have Mistral web-search
+    their current news/injury/form and summarize (1 player) or recommend a
+    pick between them (2-3 players)."""
+    names = st.multiselect(
+        "Compare players (up to 3) -- see history side by side, or Explore for live news/injury info",
+        options=df["Player"].tolist(),
+        max_selections=3,
+        key=f"{key_prefix}_compare",
+    )
+    if not names:
+        return
+
+    rows = [df[df["Player"] == name].iloc[0] for name in names]
+    cols = st.columns(len(rows))
+    chart_series = []
+    for col, row in zip(cols, rows):
+        pos_group = row.get("pos_group", "G")
+        hist = player_history(row["player_id"], pos_group, all_seasons)
+        with col:
+            st.write(f"**{row['Player']}**")
+            if hist.empty:
+                st.write("No season history found.")
+                continue
+            st.dataframe(hist, hide_index=True, width="stretch")
+            value_col = "fantasy_points" if "fantasy_points" in hist.columns else "PTS"
+            chart_series.append(hist.set_index("season")[value_col].rename(row["Player"]))
+
+    if len(chart_series) >= 2:
+        chart_df = pd.concat(chart_series, axis=1).sort_index()
+        st.line_chart(chart_df, color=COMPARE_LINE_COLORS[: len(chart_series)])
+
+    result_key = f"{key_prefix}_explore_result"
+    if st.button("Explore", key=f"{key_prefix}_explore_btn"):
+        contexts = [
+            explore.build_player_context(row, player_history(row["player_id"], row.get("pos_group", "G"), all_seasons))
+            for row in rows
+        ]
+        with st.spinner("Searching the web and summarizing..."):
+            try:
+                st.session_state[result_key] = explore.explore_players(contexts)
+            except explore.ExploreError as e:
+                st.session_state[result_key] = None
+                st.error(str(e))
+
+    if st.session_state.get(result_key):
+        st.markdown(st.session_state[result_key])
 
 
 def pick_form(player_id: str, player_name: str, pos_group: str, options: list[str], labels: dict, key_prefix: str) -> None:
@@ -144,6 +205,9 @@ def forwards_defense_tab(board: pd.DataFrame, all_seasons: pd.DataFrame, options
         render_history(selected["player_id"], selected["Player"], selected["pos_group"], all_seasons)
         pick_form(selected["player_id"], selected["Player"], selected["pos_group"], options, labels, key_prefix="fd")
 
+    st.divider()
+    render_compare_and_explore(filtered, all_seasons, key_prefix="fd")
+
     with st.expander("Show drafted forwards/defense"):
         picks = draft_state.load_picks()
         drafted_board = board[board["player_id"].isin(drafted)].merge(
@@ -175,6 +239,9 @@ def goalies_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> 
         st.divider()
         render_history(selected["player_id"], selected["Player"], "G", all_seasons)
         pick_form(selected["player_id"], selected["Player"], "G", options, labels, key_prefix="g")
+
+    st.divider()
+    render_compare_and_explore(goalies, all_seasons, key_prefix="g")
 
     with st.expander("Show drafted goalies"):
         picks = draft_state.load_picks()

@@ -4,3 +4,5 @@ lightgbm
 matplotlib
 streamlit
 requests
+mistralai
+python-dotenv
