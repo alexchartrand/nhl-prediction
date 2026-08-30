@@ -5,6 +5,7 @@ unranked goalie listing (no model exists for goalies -- see CLAUDE.md).
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -12,7 +13,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import loading
+import nhl_api
 import rank
+
+_MULTI_TEAM = re.compile(r"^\d+TM$")
 
 
 def undrafted_board(board: pd.DataFrame, drafted_ids: set[str]) -> pd.DataFrame:
@@ -35,3 +39,20 @@ def goalie_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) ->
         .sort_values("Player")
         .reset_index(drop=True)
     )
+
+
+def team_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:
+    """One row per current NHL team (for the "1 team" roster slot -- see
+    CLAUDE.md, unmodeled beyond being pickable). Live from the NHL API
+    (code + full name); if unreachable, falls back to the team codes found
+    in the latest loaded season so the slot stays pickable offline (no full
+    names available in that case -- Code doubles as Team)."""
+    teams = nhl_api.current_teams()
+    if teams:
+        pool = pd.DataFrame(teams).rename(columns={"code": "player_id", "name": "Team"})
+    else:
+        codes = df_all.loc[df_all["season"] == as_of_season, "Team"].astype(str)
+        codes = sorted(c for c in codes.unique() if not _MULTI_TEAM.match(c))
+        pool = pd.DataFrame({"player_id": codes, "Team": codes})
+    pool["Code"] = pool["player_id"]
+    return pool.sort_values("Team").reset_index(drop=True)

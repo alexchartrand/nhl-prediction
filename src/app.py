@@ -3,11 +3,12 @@
 Run with:
     .venv/Scripts/python.exe -m streamlit run src/app.py
 
-Lets the user browse the ranked F/D draft board and an unranked goalie list,
-filter by position/name, mark players as drafted (by themselves or another
-manager) with VORP recomputed on who's left, undo a pick, and look up any
-player's season history. Picks and manager names persist to ``state/`` so
-they survive an app restart mid-draft.
+Lets the user browse the ranked F/D draft board and the unranked goalie/team
+lists, filter by position/name, mark players (or a team) as drafted (by
+themselves or another manager) with VORP recomputed on who's left, undo a
+pick, and look up any player's season history. "My Pool" shows the user's
+own roster against the 9F/5D/1G/1TEAM targets. Picks and manager names
+persist to ``state/`` so they survive an app restart mid-draft.
 """
 
 from __future__ import annotations
@@ -54,6 +55,11 @@ def get_goalies(_all_seasons: pd.DataFrame) -> pd.DataFrame:
     return draft_pool.goalie_pool(_all_seasons)
 
 
+@st.cache_data
+def get_teams(_all_seasons: pd.DataFrame) -> pd.DataFrame:
+    return draft_pool.team_pool(_all_seasons)
+
+
 def manager_options(managers: dict) -> tuple[list[str], dict[str, str]]:
     options = ["me"] + managers.get("other_managers", [])
     labels = {"me": managers.get("my_team_name", "me")}
@@ -78,7 +84,7 @@ def manager_setup_form(existing: dict | None) -> None:
 
 def render_history(player_id: str, player_name: str, pos_group: str, all_seasons: pd.DataFrame) -> None:
     with st.expander(f"{player_name} — season history"):
-        hist = all_seasons[all_seasons["player_id"] == player_id].sort_values("season")
+        hist = all_seasons[all_seasons["player_id"] == player_id].sort_values("season", ascending=False)
         if hist.empty:
             st.write("No season history found.")
             return
@@ -181,6 +187,65 @@ def goalies_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> 
         )
 
 
+def teams_tab(all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
+    drafted = draft_state.drafted_player_ids()
+    teams = get_teams(all_seasons)
+    teams = teams[~teams["player_id"].isin(drafted)]
+
+    name_query = st.text_input("Search team name", key="team_name_query")
+    if name_query:
+        teams = teams[teams["Team"].str.contains(name_query, case=False, na=False)]
+    teams = teams.reset_index(drop=True)
+
+    display_cols = ["Team", "Code"]
+    selected = render_selectable_table(teams, display_cols, key="team_table")
+    st.caption(f"{len(teams)} available teams shown")
+
+    if selected is not None:
+        st.divider()
+        pick_form(selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
+
+    with st.expander("Show drafted teams"):
+        picks = draft_state.load_picks()
+        drafted_teams = picks[picks["pos_group"] == "TEAM"].sort_values("pick_number").copy()
+        drafted_teams["manager"] = drafted_teams["manager"].map(lambda m: labels.get(m, m))
+        st.dataframe(
+            drafted_teams[["player_name", "manager", "pick_number"]],
+            hide_index=True,
+            width="stretch",
+        )
+
+
+ROSTER_TARGETS = {"F": 9, "D": 5, "G": 1, "TEAM": 1}
+POS_GROUP_LABELS = {"F": "Forwards", "D": "Defense", "G": "Goalie", "TEAM": "Team"}
+
+
+def my_pool_tab(labels: dict) -> None:
+    picks = draft_state.load_picks()
+    mine = picks[picks["manager"] == "me"].sort_values("pick_number")
+
+    st.subheader(labels.get("me", "me"))
+    cols = st.columns(len(ROSTER_TARGETS))
+    for col, (pos, target) in zip(cols, ROSTER_TARGETS.items()):
+        have = (mine["pos_group"] == pos).sum()
+        col.metric(POS_GROUP_LABELS[pos], f"{have}/{target}")
+
+    if mine.empty:
+        st.write("No players drafted yet.")
+        return
+
+    for pos, label in POS_GROUP_LABELS.items():
+        sub = mine[mine["pos_group"] == pos]
+        if sub.empty:
+            continue
+        st.write(f"**{label}**")
+        st.dataframe(
+            sub[["pick_number", "player_name"]].rename(columns={"pick_number": "Pick #", "player_name": "Player"}),
+            hide_index=True,
+            width="stretch",
+        )
+
+
 def draft_log_tab(labels: dict) -> None:
     picks = draft_state.load_picks().sort_values("pick_number", ascending=False).copy()
     if picks.empty:
@@ -230,11 +295,17 @@ def main() -> None:
     board = get_board()
     all_seasons = get_all_seasons()
 
-    tab_fd, tab_g, tab_log = st.tabs(["Forwards & Defense", "Goalies", "Draft Log"])
+    tab_fd, tab_g, tab_teams, tab_mypool, tab_log = st.tabs(
+        ["Forwards & Defense", "Goalies", "Teams", "My Pool", "Draft Log"]
+    )
     with tab_fd:
         forwards_defense_tab(board, all_seasons, options, labels)
     with tab_g:
         goalies_tab(all_seasons, options, labels)
+    with tab_teams:
+        teams_tab(all_seasons, options, labels)
+    with tab_mypool:
+        my_pool_tab(labels)
     with tab_log:
         draft_log_tab(labels)
 

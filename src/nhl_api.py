@@ -52,17 +52,25 @@ def normalize_name(name: str) -> str:
     return _WHITESPACE.sub(" ", stripped)
 
 
-def current_team_codes(timeout: float = REQUEST_TIMEOUT) -> list[str]:
-    """The NHL's current team abbreviations, straight from the standings
-    endpoint rather than a hardcoded list -- survives a future relocation,
-    rename, or expansion team with no code change. [] on any failure."""
+def current_teams(timeout: float = REQUEST_TIMEOUT) -> list[dict]:
+    """The NHL's current teams (code + full name), straight from the
+    standings endpoint rather than a hardcoded list -- survives a future
+    relocation, rename, or expansion team with no code change. [] on any
+    failure."""
     try:
         resp = requests.get(STANDINGS_URL, timeout=timeout)
         resp.raise_for_status()
         rows = resp.json()["standings"]
-        return [row["teamAbbrev"]["default"] for row in rows]
+        return [
+            {"code": row["teamAbbrev"]["default"], "name": row["teamName"]["default"]}
+            for row in rows
+        ]
     except Exception:
         return []
+
+
+def current_team_codes(timeout: float = REQUEST_TIMEOUT) -> list[str]:
+    return [team["code"] for team in current_teams(timeout)]
 
 
 def fetch_current_rosters(timeout: float = REQUEST_TIMEOUT) -> dict[tuple[str, str], str | None]:
