@@ -16,6 +16,7 @@ source is needed to disambiguate.
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 
 import pandas as pd
@@ -36,6 +37,11 @@ POS_CODE_TO_GROUP = {"C": "F", "L": "F", "R": "F", "D": "D", "G": "G"}
 
 REQUEST_TIMEOUT = 3.0
 MAX_CONSECUTIVE_FAILURES = 3
+# One request per team (~32) fired back-to-back was enough to trip
+# api-web.nhle.com's rate limiter (confirmed live: HTTP 429 on the standings
+# endpoint after a handful of full fetches within a minute) -- this delay
+# keeps a single fetch well under that.
+REQUEST_DELAY = 0.2
 
 _SUFFIXES = re.compile(r"\b(jr|sr|ii|iii|iv)\.?$")
 _PUNCTUATION = re.compile(r"[^\w\s]")
@@ -73,26 +79,43 @@ def current_team_codes(timeout: float = REQUEST_TIMEOUT) -> list[str]:
     return [team["code"] for team in current_teams(timeout)]
 
 
-def fetch_current_rosters(timeout: float = REQUEST_TIMEOUT) -> dict[tuple[str, str], str | None]:
+def fetch_current_rosters(
+    timeout: float = REQUEST_TIMEOUT,
+) -> tuple[dict[tuple[str, str], str | None], bool]:
     """Best-effort {(normalized_name, pos_group): team_code}, one request per
-    current team. A (name, pos_group) pair seen on more than one roster maps
-    to None (ambiguous -- never guessed). Individual team failures are
-    skipped; if the first MAX_CONSECUTIVE_FAILURES all fail, aborts early
-    rather than burning a timeout per team when there's no connectivity."""
+    current team, paced by REQUEST_DELAY between requests. A (name, pos_group)
+    pair seen on more than one roster maps to None (ambiguous -- never
+    guessed). Individual team failures are skipped; if the first
+    MAX_CONSECUTIVE_FAILURES all fail, aborts early rather than burning a
+    timeout per team when there's no connectivity.
+
+    Returns (mapping, complete). complete=False means a 429 (rate limited)
+    was hit partway through and the fetch was abandoned early rather than
+    keep hammering an API that's already telling us to back off -- the
+    mapping is then a partial snapshot (missing teams' players just aren't
+    keys, which callers already treat as 'no live data', never 'no change').
+    """
     team_codes = current_team_codes(timeout)
     result: dict[tuple[str, str], str | None] = {}
     seen_once: set[tuple[str, str]] = set()
     consecutive_failures = 0
+    complete = True
 
     with requests.Session() as session:
-        for team in team_codes:
+        for i, team in enumerate(team_codes):
+            if i:
+                time.sleep(REQUEST_DELAY)
             try:
                 resp = session.get(ROSTER_URL.format(team=team), timeout=timeout)
+                if resp.status_code == 429:
+                    complete = False
+                    break
                 resp.raise_for_status()
                 payload = resp.json()
             except Exception:
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not result:
+                    complete = False
                     break
                 continue
 
@@ -110,17 +133,19 @@ def fetch_current_rosters(timeout: float = REQUEST_TIMEOUT) -> dict[tuple[str, s
                         seen_once.add(key)
                         result[key] = team
 
-    return result
+    return result, complete
 
 
-def current_team_map(timeout: float = REQUEST_TIMEOUT) -> dict[tuple[str, str], str | None]:
-    """Guaranteed-safe entry point: never raises, returns {} on any failure
-    including an unanticipated API response shape. Callers must treat {} as
-    'no live data available', not 'no changes'."""
+def current_team_map(timeout: float = REQUEST_TIMEOUT) -> tuple[dict[tuple[str, str], str | None], bool]:
+    """Guaranteed-safe entry point: never raises, returns ({}, False) on any
+    failure including an unanticipated API response shape. Callers must treat
+    an empty mapping as 'no live data available', not 'no changes' -- and the
+    completeness flag as whether it's worth telling the user the check might
+    be incomplete."""
     try:
         return fetch_current_rosters(timeout)
     except Exception:
-        return {}
+        return {}, False
 
 
 def detect_team_changes(board: pd.DataFrame, team_map: dict[tuple[str, str], str | None]) -> pd.Series:

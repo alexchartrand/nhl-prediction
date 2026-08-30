@@ -103,12 +103,12 @@ def build_draft_board(fetch_live_team_changes: bool = True) -> pd.DataFrame:
     ranked = add_vorp(predicted)
     ranked = notable.add_notable_flags(ranked, df_all, LATEST_SEASON)
 
-    team_map = {}
+    team_map, team_fetch_complete = {}, True
     if fetch_live_team_changes:
         try:
-            team_map = nhl_api.current_team_map()
+            team_map, team_fetch_complete = nhl_api.current_team_map()
         except Exception:
-            team_map = {}
+            team_map, team_fetch_complete = {}, False
     ranked["team_change"] = nhl_api.detect_team_changes(ranked, team_map)
     ranked["Notes"] = [
         notable.combine_notes(f, t, c)
@@ -121,7 +121,11 @@ def build_draft_board(fetch_live_team_changes: bool = True) -> pd.DataFrame:
         "predicted_points", "pos_rank", "VORP",
         "fragile", "trend", "team_change", "Notes",
     ]
-    return ranked.sort_values("VORP", ascending=False)[cols].reset_index(drop=True)
+    result = ranked.sort_values("VORP", ascending=False)[cols].reset_index(drop=True)
+    # Not persisted to the CSV -- read by app.py right after a rebuild, in
+    # the same process, to warn if the live team-change check was cut short.
+    result.attrs["team_fetch_complete"] = team_fetch_complete
+    return result
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ def _rebuild_board() -> pd.DataFrame:
     board = rank.build_draft_board()
     BOARD_PATH.parent.mkdir(exist_ok=True)
     board.to_csv(BOARD_PATH, index=False)
+    st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
     return board
 
 
@@ -351,6 +352,11 @@ def main() -> None:
             _rebuild_board()
         get_board.clear()
         st.rerun()
+    if st.session_state.get("team_fetch_complete") is False:
+        st.sidebar.warning(
+            "Live NHL roster check was rate-limited or cut short -- some "
+            "'New Team' tags may be missing. Recompute again in a bit."
+        )
 
     picks = draft_state.load_picks()
     if not picks.empty:
