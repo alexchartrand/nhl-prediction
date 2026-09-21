@@ -93,15 +93,22 @@ def add_notable_flags(board: pd.DataFrame, df_all: pd.DataFrame, as_of_season: s
     return out
 
 
-def combine_notes(fragile: bool, trend: str | None, team_change: bool | None) -> str:
+def combine_notes(
+    fragile: bool, trend: str | None, team_change: bool | None, no_team: bool = False
+) -> str:
     """Single source of truth for the 'Notes' string's wording and order.
 
     team_change=True means a live roster check found the player on a
     different team than his last loaded season; False/None (not sure, or no
     live data available) renders no tag -- this never asserts a change it
     isn't sure of.
+
+    no_team=True means the live rosters were fully fetched and the player is on
+    none of them (retired or unsigned).
     """
     tags = []
+    if no_team:
+        tags.append("No Team")
     if team_change:
         tags.append("New Team")
     if fragile:

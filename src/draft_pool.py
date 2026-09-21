@@ -22,8 +22,8 @@ _MULTI_TEAM = re.compile(r"^\d+TM$")
 def undrafted_board(
     board: pd.DataFrame,
     drafted_ids: set[str],
-    teams: int = rank.TEAMS_IN_POOL,
-    roster: dict = rank.ROSTER_SLOTS,
+    teams: int,
+    roster: dict,
 ) -> pd.DataFrame:
     """``board`` (from ``rank.build_draft_board()``) minus drafted players,
     with pos_rank/VORP/replacement_level recomputed on who's left -- so
@@ -39,11 +39,19 @@ def undrafted_board(
 def goalie_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:
     """One row per current goalie: name/team/GP only -- no predicted_points
     or VORP, since goalie stats/scoring aren't modeled yet. min_gp=1 (rather
-    than features.MIN_GP) so a backup goalie is still listed and pickable."""
+    than features.MIN_GP) so a backup goalie is still listed and pickable.
+    Team is the live NHL API team where found (else last season's)."""
     goalies = loading.latest_healthy_row(df_all, as_of_season, min_gp=1, max_seasons_back=rank.MAX_SEASONS_BACK)
     goalies = goalies[goalies["pos_group"] == "G"]
+    team_map, complete = nhl_api.current_team_map()
+    goalies = nhl_api.apply_live_team(goalies, team_map)
+    if team_map and complete:
+        no_team = nhl_api.detect_no_team(goalies, team_map)
+        goalies["Notes"] = no_team.map({True: "No Team", False: ""})
+    else:
+        goalies["Notes"] = ""
     return (
-        goalies[["player_id", "Player", "Team", "GP", "feature_season", "seasons_back"]]
+        goalies[["player_id", "Player", "Team", "GP", "Notes", "feature_season", "seasons_back"]]
         .sort_values("Player")
         .reset_index(drop=True)
     )

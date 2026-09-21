@@ -45,8 +45,9 @@ from train import make_elasticnet
 
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "output" / "draft_board.csv"
 LATEST_SEASON = "2025_2026"
-TEAMS_IN_POOL = 12
-ROSTER_SLOTS = {"F": 9, "D": 5}
+# Positions we have a model for. League shape (pool size, roster slots) is not
+# fixed here -- it lives in each season's settings.json (draft_state.load_settings).
+MODELED_POSITIONS = ("F", "D")
 # How far the injury fallback may reach for a live prediction (see
 # loading.latest_healthy_row) -- 1 means "last season's stats if this
 # season was a washout." Kept small since there's no way to tell an
@@ -57,7 +58,7 @@ MAX_SEASONS_BACK = 1
 def fit_production_models(pairs: pd.DataFrame) -> dict:
     """ElasticNet per position, fit on every available season-pair."""
     models = {}
-    for pos in ROSTER_SLOTS:
+    for pos in MODELED_POSITIONS:
         sub = pairs[pairs["pos_group"] == pos]
         models[pos] = make_elasticnet().fit(sub[FEATURE_COLS], sub[scoring.TARGET])
     return models
@@ -67,7 +68,7 @@ def predict_upcoming(models: dict, df_all: pd.DataFrame, as_of_season: str = LAT
     """Predict next season's fantasy points, falling back to each player's
     last healthy season when ``as_of_season`` was injury-shortened."""
     df = loading.latest_healthy_row(df_all, as_of_season, MIN_GP, max_seasons_back=MAX_SEASONS_BACK)
-    df = df[df["pos_group"].isin(ROSTER_SLOTS)].copy()
+    df = df[df["pos_group"].isin(MODELED_POSITIONS)].copy()
 
     df["predicted_points"] = float("nan")
     for pos, model in models.items():
@@ -76,7 +77,7 @@ def predict_upcoming(models: dict, df_all: pd.DataFrame, as_of_season: str = LAT
     return df
 
 
-def add_vorp(df: pd.DataFrame, teams: int = TEAMS_IN_POOL, roster: dict = ROSTER_SLOTS) -> pd.DataFrame:
+def add_vorp(df: pd.DataFrame, teams: int, roster: dict) -> pd.DataFrame:
     ranked = []
     for pos, slots in roster.items():
         sub = df[df["pos_group"] == pos].sort_values("predicted_points", ascending=False).reset_index(drop=True)
@@ -90,9 +91,9 @@ def add_vorp(df: pd.DataFrame, teams: int = TEAMS_IN_POOL, roster: dict = ROSTER
 
 
 def build_draft_board(
+    teams: int,
+    roster: dict,
     fetch_live_team_changes: bool = True,
-    teams: int = TEAMS_IN_POOL,
-    roster: dict = ROSTER_SLOTS,
 ) -> pd.DataFrame:
     """``fetch_live_team_changes=False`` skips the live NHL API roster check
     (see nhl_api.py) for a fully deterministic, network-free board -- used
@@ -101,8 +102,7 @@ def build_draft_board(
 
     ``teams``/``roster`` set the pool size and F/D roster slots that drive
     the VORP replacement level (see add_vorp) -- callers with a
-    league-specific pool size (see draft_state settings) should pass their
-    own instead of relying on the module defaults."""
+    league settings (see draft_state.load_settings) -- no defaults here."""
     df_all = load_scored_seasons()
     pairs = loading.make_training_pairs(
         df_all, feature_cols=FEATURE_COLS + ["Player", "pos_group"], min_feature_gp=MIN_GP
@@ -119,9 +119,16 @@ def build_draft_board(
         except Exception:
             team_map, team_fetch_complete = {}, False
     ranked["team_change"] = nhl_api.detect_team_changes(ranked, team_map)
+    ranked = nhl_api.apply_live_team(ranked, team_map)
+    if team_map and team_fetch_complete:
+        ranked["no_team"] = nhl_api.detect_no_team(ranked, team_map)
+    else:
+        ranked["no_team"] = False
     ranked["Notes"] = [
-        notable.combine_notes(f, t, c)
-        for f, t, c in zip(ranked["fragile"], ranked["trend"], ranked["team_change"])
+        notable.combine_notes(f, t, c, n)
+        for f, t, c, n in zip(
+            ranked["fragile"], ranked["trend"], ranked["team_change"], ranked["no_team"]
+        )
     ]
 
     cols = [
@@ -138,7 +145,14 @@ def build_draft_board(
 
 
 if __name__ == "__main__":
-    board = build_draft_board()
+    import draft_state
+
+    seasons = draft_state.list_seasons()
+    settings = draft_state.load_settings(seasons[0]) if seasons else draft_state.DEFAULT_SETTINGS
+    board = build_draft_board(
+        teams=settings["num_managers"],
+        roster={"F": settings["forwards"], "D": settings["defense"]},
+    )
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
     board.to_csv(OUTPUT_PATH, index=False)
     print(f"wrote {len(board)} players to {OUTPUT_PATH}\n")

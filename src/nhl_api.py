@@ -99,7 +99,7 @@ def fetch_current_rosters(
     result: dict[tuple[str, str], str | None] = {}
     seen_once: set[tuple[str, str]] = set()
     consecutive_failures = 0
-    complete = True
+    complete = bool(team_codes)
 
     with requests.Session() as session:
         for i, team in enumerate(team_codes):
@@ -168,3 +168,23 @@ def detect_team_changes(board: pd.DataFrame, team_map: dict[tuple[str, str], str
         return live_team != TEAM_CODE_FIXES.get(last_team, last_team)
 
     return board.apply(_check, axis=1)
+
+
+def detect_no_team(board: pd.DataFrame, team_map: dict[tuple[str, str], str | None]) -> pd.Series:
+    """True where the player is on no current NHL roster (retired/unsigned).
+    Only call with a complete, non-empty team_map -- a partial or empty map
+    can't distinguish 'no team' from 'not fetched'. Ambiguous names (mapped to
+    None) are present in the map, so they are not flagged."""
+    keys = [(normalize_name(n), g) for n, g in zip(board["Player"], board["pos_group"])]
+    return pd.Series([k not in team_map for k in keys], index=board.index)
+
+
+def apply_live_team(df: pd.DataFrame, team_map: dict[tuple[str, str], str | None]) -> pd.DataFrame:
+    """Copy of ``df`` with ``Team`` replaced by the player's current NHL team
+    wherever the live roster lookup found an unambiguous match; everyone else
+    keeps their last-loaded-season team. Call after detect_team_changes, which
+    needs the old Team to compare against."""
+    out = df.copy()
+    live = [team_map.get((normalize_name(n), g)) for n, g in zip(out["Player"], out["pos_group"])]
+    out["Team"] = [t if t else old for t, old in zip(live, out["Team"])]
+    return out

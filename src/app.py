@@ -229,11 +229,14 @@ def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: st
         st.markdown(st.session_state[result_key])
 
 
-def pick_form(season: str, player_id: str, player_name: str, pos_group: str, options: list[str], labels: dict, key_prefix: str) -> None:
+def pick_form(season: str, player_id: str | None, player_name: str | None, pos_group: str | None, options: list[str], labels: dict, key_prefix: str) -> None:
+    enabled = player_id is not None
     with st.form(f"{key_prefix}_pick_form"):
-        manager = st.selectbox("Drafted by", options, format_func=lambda m: labels.get(m, m), key=f"{key_prefix}_manager")
-        submitted = st.form_submit_button(f"Draft {player_name}")
-    if submitted:
+        manager = st.selectbox(
+            "Drafted by", options, format_func=lambda m: labels.get(m, m), key=f"{key_prefix}_manager", disabled=not enabled
+        )
+        submitted = st.form_submit_button(f"Draft {player_name}" if enabled else "Draft", disabled=not enabled)
+    if submitted and enabled:
         draft_state.add_pick(season, player_id, player_name, pos_group, manager)
         st.rerun()
 
@@ -277,8 +280,8 @@ def selection_rows(base_key: str) -> list[int]:
     return list(state.selection.rows) if state else []
 
 
-def uncheck_all_button(base_key: str, label: str = "Uncheck all") -> None:
-    if st.button(label, key=f"{base_key}_uncheck_all"):
+def uncheck_all_button(base_key: str, label: str = "Uncheck all", disabled: bool = False) -> None:
+    if st.button(label, key=f"{base_key}_uncheck_all", disabled=disabled):
         st.session_state[f"{base_key}_version"] = st.session_state.get(f"{base_key}_version", 0) + 1
         st.rerun()
 
@@ -306,13 +309,12 @@ def forwards_defense_tab(
         st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
         selected = selected.iloc[:3]
 
-    if not selected.empty:
-        uncheck_all_button("fd_table")
-        render_compare(selected, all_seasons, key_prefix="fd")
-        if len(selected) == 1:
-            row = selected.iloc[0]
-            pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd")
-        st.divider()
+    if len(selected) == 1:
+        row = selected.iloc[0]
+        pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd")
+    else:
+        pick_form(season, None, None, None, options, labels, key_prefix="fd")
+    st.divider()
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -320,9 +322,15 @@ def forwards_defense_tab(
     with col2:
         st.text_input("Search player name", key="fd_name_query")
 
+    uncheck_all_button("fd_table", disabled=selected.empty)
+
     display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "pos_rank", "VORP"]
     st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
+
+    if not selected.empty:
+        st.divider()
+        render_compare(selected, all_seasons, key_prefix="fd")
 
     with st.expander("Show drafted forwards/defense"):
         picks = draft_state.load_picks(season)
@@ -353,19 +361,24 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
         st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
         selected = selected.iloc[:3]
 
-    if not selected.empty:
-        uncheck_all_button("g_table")
-        render_compare(selected, all_seasons, key_prefix="g")
-        if len(selected) == 1:
-            row = selected.iloc[0]
-            pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g")
-        st.divider()
+    if len(selected) == 1:
+        row = selected.iloc[0]
+        pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g")
+    else:
+        pick_form(season, None, None, None, options, labels, key_prefix="g")
+    st.divider()
 
     st.text_input("Search goalie name", key="g_name_query")
 
-    display_cols = ["Player", "Team", "GP", "feature_season", "seasons_back"]
+    uncheck_all_button("g_table", disabled=selected.empty)
+
+    display_cols = ["Player", "Team", "GP", "Notes", "feature_season", "seasons_back"]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
+
+    if not selected.empty:
+        st.divider()
+        render_compare(selected, all_seasons, key_prefix="g")
 
     with st.expander("Show drafted goalies"):
         picks = draft_state.load_picks(season)

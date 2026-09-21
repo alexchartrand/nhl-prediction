@@ -38,9 +38,8 @@ PICK_COLUMNS = ["player_id", "player_name", "pos_group", "manager", "pick_number
 # League shape a season's VORP/roster tracking is computed against -- pool
 # size (num_managers) drives the VORP replacement-level cutoff (see
 # rank.add_vorp), the rest drive both that cutoff (forwards/defense) and the
-# "My Pool" roster-progress display (all four). Defaults match the values
-# that were hardcoded pre-season-scoping (rank.TEAMS_IN_POOL/ROSTER_SLOTS,
-# app.py's old ROSTER_TARGETS).
+# "My Pool" roster-progress display (all four). Defaults only fill keys a
+# season's settings.json doesn't have yet; rank/draft_pool take no defaults.
 DEFAULT_SETTINGS = {
     "num_managers": 12,
     "forwards": 9,
