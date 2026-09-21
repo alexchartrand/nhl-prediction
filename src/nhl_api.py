@@ -42,6 +42,16 @@ MAX_CONSECUTIVE_FAILURES = 3
 # endpoint after a handful of full fetches within a minute) -- this delay
 # keeps a single fetch well under that.
 REQUEST_DELAY = 0.2
+# On a 429 the request is retried after a cooldown rather than abandoned, so
+# a rate limit slows the board build down instead of leaving it partial. The
+# server's Retry-After is honored when present, else exponential backoff
+# (RATE_LIMIT_COOLDOWN * 2**attempt); both capped at MAX_COOLDOWN. Each 429
+# also permanently widens the pacing delay for the rest of the fetch.
+RATE_LIMIT_COOLDOWN = 5.0
+MAX_COOLDOWN = 60.0
+DELAY_BACKOFF_STEP = 0.3
+# Total time one fetch may spend in 429 cooldowns before giving up.
+COOLDOWN_BUDGET = 600.0
 
 _SUFFIXES = re.compile(r"\b(jr|sr|ii|iii|iv)\.?$")
 _PUNCTUATION = re.compile(r"[^\w\s]")
@@ -58,13 +68,41 @@ def normalize_name(name: str) -> str:
     return _WHITESPACE.sub(" ", stripped)
 
 
+def _cooldown_seconds(resp: requests.Response, attempt: int) -> float:
+    retry_after = resp.headers.get("Retry-After", "")
+    try:
+        wait = float(retry_after)
+    except ValueError:
+        wait = RATE_LIMIT_COOLDOWN * 2**attempt
+    return min(max(wait, 1.0), MAX_COOLDOWN)
+
+
+def _get_with_cooldown(getter, url: str, timeout: float, budget: float = COOLDOWN_BUDGET) -> tuple[requests.Response, float]:
+    """``getter(url, timeout=...)`` retried through 429s, sleeping a cooldown
+    between attempts until ``budget`` seconds of waiting are spent. Returns
+    (response, seconds_waited); the response is still a 429 if the budget ran
+    out. Non-429 errors are the caller's to handle (exceptions propagate)."""
+    waited = 0.0
+    resp = getter(url, timeout=timeout)
+    attempt = 0
+    while resp.status_code == 429:
+        wait = _cooldown_seconds(resp, attempt)
+        if waited + wait > budget:
+            break
+        time.sleep(wait)
+        waited += wait
+        attempt += 1
+        resp = getter(url, timeout=timeout)
+    return resp, waited
+
+
 def current_teams(timeout: float = REQUEST_TIMEOUT) -> list[dict]:
     """The NHL's current teams (code + full name), straight from the
     standings endpoint rather than a hardcoded list -- survives a future
     relocation, rename, or expansion team with no code change. [] on any
     failure."""
     try:
-        resp = requests.get(STANDINGS_URL, timeout=timeout)
+        resp, _ = _get_with_cooldown(requests.get, STANDINGS_URL, timeout)
         resp.raise_for_status()
         rows = resp.json()["standings"]
         return [
@@ -79,6 +117,27 @@ def current_team_codes(timeout: float = REQUEST_TIMEOUT) -> list[str]:
     return [team["code"] for team in current_teams(timeout)]
 
 
+def _parse_roster(payload: dict) -> list[tuple[tuple[str, str], str]]:
+    players = []
+    for group_key in ("forwards", "defensemen", "goalies"):
+        for player in payload.get(group_key, []):
+            pos_group = POS_CODE_TO_GROUP.get(player.get("positionCode"))
+            if pos_group is None:
+                continue
+            full_name = f"{player['firstName']['default']} {player['lastName']['default']}"
+            players.append(((normalize_name(full_name), pos_group), pos_group))
+    return players
+
+
+# team_code -> (fetched_at, [(name_key, ...)]) for every roster fetched so
+# far in this process. Lets a rate-limited fetch resume with only the teams
+# still missing instead of restarting from team 1 (which is what kept
+# re-tripping the limiter), and lets the board, goalie and team views share
+# one fetch instead of each hammering the API in turn.
+_ROSTER_CACHE: dict[str, tuple[float, list]] = {}
+ROSTER_CACHE_TTL = 1800.0
+
+
 def fetch_current_rosters(
     timeout: float = REQUEST_TIMEOUT,
 ) -> tuple[dict[tuple[str, str], str | None], bool]:
@@ -89,50 +148,61 @@ def fetch_current_rosters(
     MAX_CONSECUTIVE_FAILURES all fail, aborts early rather than burning a
     timeout per team when there's no connectivity.
 
-    Returns (mapping, complete). complete=False means a 429 (rate limited)
-    was hit partway through and the fetch was abandoned early rather than
-    keep hammering an API that's already telling us to back off -- the
-    mapping is then a partial snapshot (missing teams' players just aren't
-    keys, which callers already treat as 'no live data', never 'no change').
+    A 429 (rate limited) triggers a cooldown and a retry of the same team
+    (see _get_with_cooldown), widens the delay between later requests, and
+    keeps going for up to COOLDOWN_BUDGET seconds of waiting. Rosters already
+    fetched (within ROSTER_CACHE_TTL) are reused, so a retry after a failed
+    attempt only requests the teams still missing.
+
+    Returns (mapping, complete). complete=False means some team never
+    succeeded (budget exhausted or no connectivity) -- the mapping is then a
+    partial snapshot (missing teams' players just aren't keys, which callers
+    already treat as 'no live data', never 'no change').
     """
     team_codes = current_team_codes(timeout)
-    result: dict[tuple[str, str], str | None] = {}
-    seen_once: set[tuple[str, str]] = set()
+    now = time.time()
+    fresh = {t: v for t, v in _ROSTER_CACHE.items() if now - v[0] < ROSTER_CACHE_TTL}
+    _ROSTER_CACHE.clear()
+    _ROSTER_CACHE.update(fresh)
+
     consecutive_failures = 0
-    complete = bool(team_codes)
+    delay = REQUEST_DELAY
+    budget = COOLDOWN_BUDGET
+    made_request = False
 
     with requests.Session() as session:
-        for i, team in enumerate(team_codes):
-            if i:
-                time.sleep(REQUEST_DELAY)
+        for team in team_codes:
+            if team in _ROSTER_CACHE:
+                continue
+            if made_request:
+                time.sleep(delay)
+            made_request = True
             try:
-                resp = session.get(ROSTER_URL.format(team=team), timeout=timeout)
+                resp, waited = _get_with_cooldown(session.get, ROSTER_URL.format(team=team), timeout, budget)
+                budget -= waited
+                if waited:
+                    delay += DELAY_BACKOFF_STEP
                 if resp.status_code == 429:
-                    complete = False
                     break
                 resp.raise_for_status()
-                payload = resp.json()
+                _ROSTER_CACHE[team] = (time.time(), _parse_roster(resp.json()))
             except Exception:
                 consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not result:
-                    complete = False
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not _ROSTER_CACHE:
                     break
                 continue
-
             consecutive_failures = 0
-            for group_key in ("forwards", "defensemen", "goalies"):
-                for player in payload.get(group_key, []):
-                    pos_group = POS_CODE_TO_GROUP.get(player.get("positionCode"))
-                    if pos_group is None:
-                        continue
-                    full_name = f"{player['firstName']['default']} {player['lastName']['default']}"
-                    key = (normalize_name(full_name), pos_group)
-                    if key in seen_once:
-                        result[key] = None
-                    else:
-                        seen_once.add(key)
-                        result[key] = team
 
+    result: dict[tuple[str, str], str | None] = {}
+    seen_once: set[tuple[str, str]] = set()
+    for team in team_codes:
+        for key, _ in _ROSTER_CACHE.get(team, (0, []))[1]:
+            if key in seen_once:
+                result[key] = None
+            else:
+                seen_once.add(key)
+                result[key] = team
+    complete = bool(team_codes) and all(t in _ROSTER_CACHE for t in team_codes)
     return result, complete
 
 
