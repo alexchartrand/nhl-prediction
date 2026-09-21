@@ -142,13 +142,30 @@ def manager_setup_form(season: str, existing: dict | None) -> None:
             st.subheader("Set up your league")
         with st.form("manager_setup"):
             my_team = st.text_input("My team name", value=(existing or {}).get("my_team_name", "Me"))
-            others_default = "\n".join((existing or {}).get("other_managers", []))
-            others_text = st.text_area("Other managers (one per line)", value=others_default, height=180)
+            # The draft order is the manager list: everyone, in draw order, including
+            # your own team. Seasons saved before that (no order yet) prefill with
+            # "me" first plus the old other-managers list.
+            _, labels = manager_options(existing or {})
+            ids = draft_state.load_draft_order(season) or (
+                ["me", *existing.get("other_managers", [])] if existing else []
+            )
+            order_text = st.text_area(
+                "Managers in draft order (one per line, including your own team)",
+                value="\n".join(labels.get(m, m) for m in ids),
+                height=260,
+                help="Round 1 goes first to last, then the order reverses (snake). Each manager once.",
+            )
             submitted = st.form_submit_button("Save")
         if submitted:
-            others = [line.strip() for line in others_text.splitlines() if line.strip()]
-            draft_state.save_managers(season, my_team, others)
-            st.rerun()
+            names = [line.strip() for line in order_text.splitlines() if line.strip()]
+            if my_team not in names:
+                st.error("Your team name must appear in the list. Not saved.")
+            elif len(set(names)) != len(names):
+                st.error("Each manager must appear only once. Not saved.")
+            else:
+                order = ["me" if name == my_team else name for name in names]
+                draft_state.save_managers(season, my_team, [n for n in names if n != my_team], order)
+                st.rerun()
 
 
 def settings_form(season: str, existing: dict) -> None:
@@ -239,9 +256,20 @@ def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: st
 
 def pick_form(season: str, player_id: str | None, player_name: str | None, pos_group: str | None, options: list[str], labels: dict, key_prefix: str) -> None:
     enabled = player_id is not None
+    # Defaults to whoever's on the clock (snake order) but stays changeable. The
+    # widget key includes the pick count so the default re-applies after every
+    # pick, while a manual override sticks until the pick is made.
+    active = draft_state.active_manager(season)
+    index = options.index(active) if active in options else 0
+    n_picks = len(draft_state.load_picks(season))
     with st.form(f"{key_prefix}_pick_form"):
         manager = st.selectbox(
-            "Drafted by", options, format_func=lambda m: labels.get(m, m), key=f"{key_prefix}_manager", disabled=not enabled
+            "Drafted by",
+            options,
+            index=index,
+            format_func=lambda m: labels.get(m, m),
+            key=f"{key_prefix}_manager_{n_picks}",
+            disabled=not enabled,
         )
         submitted = st.form_submit_button(f"Draft {player_name}" if enabled else "Draft", disabled=not enabled)
     if submitted and enabled:
@@ -527,6 +555,16 @@ def main() -> None:
         last = picks.sort_values("pick_number").iloc[-1]
         st.sidebar.caption(
             f"Last pick: #{int(last['pick_number'])} {last['player_name']} → {labels.get(last['manager'], last['manager'])}"
+        )
+
+    order = draft_state.load_draft_order(season)
+    if order:
+        slot = draft_state.next_slot(picks)
+        on_clock = draft_state.snake_manager(order, slot)
+        upcoming = draft_state.snake_manager(order, slot + 1)
+        st.info(
+            f"On the clock: **{labels.get(on_clock, on_clock)}** -- pick #{len(picks) + 1}, "
+            f"round {slot // len(order) + 1}. Next: {labels.get(upcoming, upcoming)}"
         )
 
     board = get_board(season, settings)

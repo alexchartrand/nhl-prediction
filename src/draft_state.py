@@ -33,7 +33,11 @@ LEGACY_PICKS_PATH = STATE_DIR / "picks.json"
 LEGACY_MANAGERS_PATH = STATE_DIR / "managers.json"
 LEGACY_MIGRATION_SEASON = "2026-2027"
 
-PICK_COLUMNS = ["player_id", "player_name", "pos_group", "manager", "pick_number", "timestamp"]
+# ``slot`` is the pick's position in the snake sequence (0-based; see
+# snake_manager) -- normally pick_number - 1, but it differs after a manual
+# out-of-turn override so the order continues from the overridden manager.
+# Missing (NaN) on picks made before a draft order was set.
+PICK_COLUMNS = ["player_id", "player_name", "pos_group", "manager", "pick_number", "timestamp", "slot"]
 
 # League shape a season's VORP/roster tracking is computed against -- pool
 # size (num_managers) drives the VORP replacement-level cutoff (see
@@ -125,7 +129,52 @@ def load_picks(season: str) -> pd.DataFrame:
 
 
 def save_picks(season: str, picks: pd.DataFrame) -> None:
-    _write_json(_picks_path(season), picks.to_dict(orient="records"))
+    records = picks.astype(object).where(picks.notna(), None)  # NaN slot -> JSON null
+    _write_json(_picks_path(season), records.to_dict(orient="records"))
+
+
+def snake_manager(order: list[str], slot: int) -> str:
+    """Manager on the clock at ``slot`` (0-based) of a snake draft over
+    ``order``: round 1 goes first-to-last, round 2 last-to-first, and so on
+    alternating."""
+    n = len(order)
+    rnd, i = divmod(slot, n)
+    return order[i if rnd % 2 == 0 else n - 1 - i]
+
+
+def next_slot(picks: pd.DataFrame) -> int:
+    """Snake slot of the next pick: one past the last pick's slot. Picks made
+    before a draft order was set have no slot, so those count by pick number."""
+    if picks.empty:
+        return 0
+    last = picks.sort_values("pick_number").iloc[-1]
+    if pd.isna(last["slot"]):
+        return int(last["pick_number"])
+    return int(last["slot"]) + 1
+
+
+def _pick_slot(picks: pd.DataFrame, order: list[str], manager: str) -> int | None:
+    """Slot to record for a pick by ``manager``. On turn, the expected slot.
+    Off turn (manual override), the overridden manager's own slot in the
+    current round, so the sequence continues from him rather than snapping
+    back to where it was."""
+    if not order or manager not in order:
+        return None
+    expected = next_slot(picks)
+    if snake_manager(order, expected) == manager:
+        return expected
+    n = len(order)
+    rnd = expected // n
+    pos = order.index(manager)
+    return rnd * n + (pos if rnd % 2 == 0 else n - 1 - pos)
+
+
+def active_manager(season: str) -> str | None:
+    """Manager on the clock, or None if no draft order is set for the season."""
+    order = load_draft_order(season)
+    if not order:
+        return None
+    return snake_manager(order, next_slot(load_picks(season)))
 
 
 def add_pick(season: str, player_id: str, player_name: str, pos_group: str, manager: str) -> pd.DataFrame:
@@ -139,6 +188,7 @@ def add_pick(season: str, player_id: str, player_name: str, pos_group: str, mana
         "manager": manager,
         "pick_number": len(picks) + 1,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "slot": _pick_slot(picks, load_draft_order(season), manager),
     }
     picks = pd.concat([picks, pd.DataFrame([row])], ignore_index=True)
     save_picks(season, picks)
@@ -166,8 +216,24 @@ def load_managers(season: str) -> dict:
         return json.load(f)
 
 
-def save_managers(season: str, my_team_name: str, other_managers: list[str]) -> None:
-    _write_json(_managers_path(season), {"my_team_name": my_team_name, "other_managers": other_managers})
+def load_draft_order(season: str) -> list[str]:
+    """Manager ids ("me" or an other-manager name) in draw order; empty if
+    none set. Dropped down to ids that still exist, so renaming/removing a
+    manager can't leave the snake pointing at nobody -- an incomplete order
+    is treated as no order rather than silently skipping someone."""
+    managers = load_managers(season)
+    order = managers.get("draft_order", [])
+    valid = {"me", *managers.get("other_managers", [])}
+    return order if order and set(order) == valid and len(order) == len(valid) else []
+
+
+def save_managers(
+    season: str, my_team_name: str, other_managers: list[str], draft_order: list[str] | None = None
+) -> None:
+    data = {"my_team_name": my_team_name, "other_managers": other_managers}
+    if draft_order:
+        data["draft_order"] = draft_order
+    _write_json(_managers_path(season), data)
 
 
 def load_settings(season: str) -> dict:

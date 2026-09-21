@@ -122,6 +122,14 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
       `min_gp=1` for listing so backups stay pickable; unmodeled ones sort last). The "1 team" roster slot isn't modeled -- tracked manually
       outside the app.
 
+- [x] Snake-draft auto-advance: "Managers in draft order" box in the Edit managers form (the only manager list; one per line, every
+      manager once incl. your own team; stored in `managers.json`). `draft_state.snake_manager` /
+      `next_slot` / `active_manager`: round 1 first-to-last, then reversed, alternating. Each pick records
+      a `slot`; the "Drafted by" box defaults to whoever's on the clock and is re-defaulted after every
+      pick, but stays changeable. A manual out-of-turn pick continues the snake from the overridden manager
+      (not snap-back), and undo restores the prior on-clock manager. No order set = old behavior. A banner
+      at the top shows on the clock / next.
+
 ## Setup
 ```
 python -m venv .venv
