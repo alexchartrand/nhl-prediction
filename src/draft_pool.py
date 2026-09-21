@@ -1,6 +1,6 @@
 """Live draft-day view over the static draft board: undrafted players only,
 with VORP/replacement-level recomputed against what's actually left, plus an
-unranked goalie listing (no model exists for goalies -- see CLAUDE.md).
+goalie listing ranked by the goalie model (see goalies.py).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import goalies
 import loading
 import nhl_api
 import rank
@@ -36,25 +37,48 @@ def undrafted_board(
     return rank.add_vorp(remaining, teams=teams, roster=roster).sort_values("VORP", ascending=False).reset_index(drop=True)
 
 
-def goalie_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:
-    """One row per current goalie: name/team/GP only -- no predicted_points
-    or VORP, since goalie stats/scoring aren't modeled yet. min_gp=1 (rather
-    than features.MIN_GP) so a backup goalie is still listed and pickable.
+def goalie_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:
+    """One row per current goalie, with ``predicted_points`` from the goalie
+    model (see goalies.py). ``goalie_df`` is ``goalies.load_scored_goalies()``.
+
+    Every goalie with a game in the window is listed and pickable
+    (min_gp=1), but only those with at least ``goalies.MIN_GP`` games in
+    their feature season get a prediction -- a call-up's handful of starts
+    is too noisy to model -- so a backup can show ``predicted_points`` NaN.
     Team is the live NHL API team where found (else last season's)."""
-    goalies = loading.latest_healthy_row(df_all, as_of_season, min_gp=1, max_seasons_back=rank.MAX_SEASONS_BACK)
-    goalies = goalies[goalies["pos_group"] == "G"]
+    listed = loading.latest_healthy_row(goalie_df, as_of_season, min_gp=1, max_seasons_back=rank.MAX_SEASONS_BACK)
+    model = goalies.fit_model(goalie_df)
+    predicted = goalies.predict_upcoming(model, goalie_df, as_of_season)
+    listed = listed.merge(predicted[["player_id", "predicted_points"]], on="player_id", how="left")
+
     team_map, complete = nhl_api.current_team_map()
-    goalies = nhl_api.apply_live_team(goalies, team_map)
+    listed = nhl_api.apply_live_team(listed, team_map)
     if team_map and complete:
-        no_team = nhl_api.detect_no_team(goalies, team_map)
-        goalies["Notes"] = no_team.map({True: "No Team", False: ""})
+        no_team = nhl_api.detect_no_team(listed, team_map)
+        listed["Notes"] = no_team.map({True: "No Team", False: ""})
     else:
-        goalies["Notes"] = ""
-    return (
-        goalies[["player_id", "Player", "Team", "GP", "Notes", "feature_season", "seasons_back"]]
-        .sort_values("Player")
-        .reset_index(drop=True)
-    )
+        listed["Notes"] = ""
+    return listed[
+        ["player_id", "Player", "Team", "pos_group", "GP", "predicted_points", "Notes", "feature_season", "seasons_back"]
+    ].reset_index(drop=True)
+
+
+def undrafted_goalies(pool: pd.DataFrame, drafted_ids: set[str], teams: int, slots: int) -> pd.DataFrame:
+    """``goalie_pool`` minus drafted goalies, ranked by predicted points with
+    VORP against the ``teams * slots``-th best goalie left (same replacement
+    logic as the F/D board). Goalies without a prediction sort last, no VORP."""
+    remaining = pool[~pool["player_id"].isin(drafted_ids)].copy()
+    modeled = remaining[remaining["predicted_points"].notna()]
+    unmodeled = remaining[remaining["predicted_points"].isna()].sort_values("Player")
+    if slots >= 1 and not modeled.empty:
+        modeled = rank.add_vorp(modeled, teams=teams, roster={"G": slots})
+    else:
+        modeled = modeled.sort_values("predicted_points", ascending=False)
+    out = pd.concat([modeled, unmodeled], ignore_index=True)
+    for col in ("pos_rank", "VORP", "replacement_level"):
+        if col not in out.columns:
+            out[col] = float("nan")
+    return out
 
 
 def team_pool(df_all: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:

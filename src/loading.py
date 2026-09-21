@@ -131,6 +131,38 @@ def load_all_seasons(data_dir: Path = DATA_DIR) -> pd.DataFrame:
     )
 
 
+def load_goalie_season(season: str, data_dir: Path = DATA_DIR) -> pd.DataFrame:
+    """One row per goalie for ``season`` from ``goalies-{YYYY}-{YYYY}.txt``.
+
+    Same slug/traded-splits/League-Average quirks as the skater exports but a
+    single header row and hyphenated file names (``2024-2025``). ``season``
+    uses the project's ``2024_2025`` spelling.
+    """
+    path = data_dir / f"goalies-{season.replace('_', '-')}.txt"
+    df = pd.read_csv(path, encoding="utf-8")
+    df = df.rename(columns={_RAW_ID_COL: ID_COL, "Tm": "Team"})
+    df = df[df[ID_COL].notna() & (df[ID_COL].astype(str) != _RAW_ID_COL)]
+    df = _drop_traded_splits(df)
+    df["MIN"] = df["MIN"].map(_to_minutes)
+    df = df.drop(columns=["Rk", "Awards"], errors="ignore")
+    df.insert(0, "season", season)
+    df["pos_group"] = "G"
+    return df.reset_index(drop=True)
+
+
+def available_goalie_seasons(data_dir: Path = DATA_DIR) -> list[str]:
+    return sorted(
+        p.stem.removeprefix("goalies-").replace("-", "_") for p in data_dir.glob("goalies-*.txt")
+    )
+
+
+def load_all_goalie_seasons(data_dir: Path = DATA_DIR) -> pd.DataFrame:
+    return pd.concat(
+        [load_goalie_season(s, data_dir) for s in available_goalie_seasons(data_dir)],
+        ignore_index=True,
+    )
+
+
 def _season_start_year(season: str) -> int:
     return int(season.split("_")[0])
 

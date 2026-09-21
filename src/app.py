@@ -24,11 +24,13 @@ import draft_pool
 import draft_state
 import explore
 import features
+import goalies as goalies_module
 import rank
 
 # First three slots of the validated categorical palette (dataviz skill) --
 # these three pass the CVD/contrast floors together in both light and dark.
 COMPARE_LINE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+GOALIE_HISTORY_COLS = ["season", "Team", "GP", "GS", "W", "L", "T/O", "SV%", "GAA", "SO", "fantasy_points"]
 HISTORY_COLS = ["season", "Team", "Pos", "GP", "G", "A", "PTS", "SOG", "PPG", "PP"]
 
 st.set_page_config(page_title="Draft Assistant", layout="wide")
@@ -68,8 +70,13 @@ def get_all_seasons() -> pd.DataFrame:
 
 
 @st.cache_data
-def get_goalies(_all_seasons: pd.DataFrame) -> pd.DataFrame:
-    return draft_pool.goalie_pool(_all_seasons)
+def get_goalie_seasons() -> pd.DataFrame:
+    return goalies_module.load_scored_goalies()
+
+
+@st.cache_data
+def get_goalies() -> pd.DataFrame:
+    return draft_pool.goalie_pool(get_goalie_seasons())
 
 
 @st.cache_data
@@ -185,8 +192,9 @@ def player_history(player_id: str, pos_group: str, all_seasons: pd.DataFrame) ->
     hist = all_seasons[all_seasons["player_id"] == player_id].sort_values("season", ascending=False)
     if hist.empty:
         return hist
-    cols = HISTORY_COLS + (["fantasy_points"] if pos_group != "G" else [])
-    return hist[cols]
+    if pos_group == "G":
+        return hist[GOALIE_HISTORY_COLS]  # needs the goalie frame (skater export has only G/A for goalies)
+    return hist[HISTORY_COLS + ["fantasy_points"]]
 
 
 def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: str) -> None:
@@ -345,10 +353,11 @@ def forwards_defense_tab(
         )
 
 
-def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
+def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict, settings: dict) -> None:
     drafted = draft_state.drafted_player_ids(season)
-    goalies = get_goalies(all_seasons)
-    goalies = goalies[~goalies["player_id"].isin(drafted)]
+    goalies = draft_pool.undrafted_goalies(
+        get_goalies(), drafted, teams=settings["num_managers"], slots=settings["goalies"]
+    )
 
     name_query = st.session_state.get("g_name_query", "")
     if name_query:
@@ -372,13 +381,13 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 
     uncheck_all_button("g_table", disabled=selected.empty)
 
-    display_cols = ["Player", "Team", "GP", "Notes", "feature_season", "seasons_back"]
+    display_cols = ["Player", "Team", "GP", "predicted_points", "pos_rank", "VORP", "Notes", "feature_season", "seasons_back"]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
     if not selected.empty:
         st.divider()
-        render_compare(selected, all_seasons, key_prefix="g")
+        render_compare(selected, get_goalie_seasons(), key_prefix="g")
 
     with st.expander("Show drafted goalies"):
         picks = draft_state.load_picks(season)
@@ -529,7 +538,7 @@ def main() -> None:
     with tab_fd:
         forwards_defense_tab(season, board, all_seasons, options, labels, settings)
     with tab_g:
-        goalies_tab(season, all_seasons, options, labels)
+        goalies_tab(season, all_seasons, options, labels, settings)
     with tab_teams:
         teams_tab(season, all_seasons, options, labels)
     with tab_mypool:

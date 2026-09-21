@@ -26,12 +26,12 @@ available.
 Note: **2020-21 was COVID-shortened (56 GP max)**. It's used as a features-year without special
 handling since the model runs on per-game rates, but keep an eye out if it behaves like an outlier.
 
-### Data gaps blocking progress
-- **No goalie stats.** Goalies appear in the skater export with only their assists — no W,
-  SV%, GAA, SO, or starts. Deferred for now per the user — do not chase this until asked.
-- **Goalie scoring undefined** — standard G+A doesn't describe how goalies earn points.
+### Data gaps
+- Goalie stats are now loaded (see above); the skater export's goalie rows (assists only) are ignored.
 
 ## Settled
+- **Goalie scoring**: 2 per win (regular or OT/SO), 1 per OT/SO loss (HR's `T/O` column),
+  2 per shutout, 5 per goal, 2 per assist. `scoring.GOALIE_WEIGHTS`. A shutout win is 4.
 - **Scoring system**: skater fantasy points = G + A + 1 bonus per SHG. Encoded in
   `src/scoring.py` as a weight dict so further rule changes are a one-file edit.
 - **Hat-trick bonus (+1) requested but NOT implemented**: this dataset is Hockey-Reference
@@ -100,7 +100,15 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
       evaluated it as a name-matching bridge for this feature and it would've added a
       second unreliable name join on top of the one already needed, no upside over
       matching the live roster response directly.
-- [ ] (Later, per user) Add goalie stat export + define goalie scoring
+- [x] Goalie model: `src/goalies.py` (`python src/goalies.py` prints the eval). ElasticNet on 21 features
+      (rates per GP, GS/GP/MIN workload, SV%, GSAA, GPS, plus 2-season averages of pts/game, SV%, GSAA,
+      GP). Holdout (2024-25 -> 2025-26): MAE 15.9, Spearman 0.60 (mean baseline MAE 20.4; last-season
+      total MAE 18.6, Spearman 0.50). Much noisier than skaters -- goalie output hinges on workload/team,
+      which the data only weakly reveals. Tried and dropped: team goals-for context (no gain), LightGBM
+      (worse; ~570 train rows). 2-season averages helped modestly and are kept. Goalies with <10 GP in
+      their feature season get no prediction (still listed/pickable). Integrated in the app's Goalies
+      tab (`draft_pool.goalie_pool` / `undrafted_goalies`) with VORP vs the teams x goalie-slots-th goalie.
+      Not modeled: starter/backup role changes from trades or signings.
 - [x] Draft-day app: `src/app.py`, run via `.venv/Scripts/python.exe -m streamlit
       run src/app.py`. Live view over `rank.build_draft_board()` -- filter by
       position/name, mark a player picked (by you or another manager), undo,
@@ -110,10 +118,8 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
       recomputes live (`src/draft_pool.undrafted_board`) against only
       undrafted players, so replacement level shifts as a position gets
       drafted down -- reuses `rank.add_vorp` rather than a second
-      implementation. Goalies get an unranked list (name/team/GP only, via
-      `draft_pool.goalie_pool`, `min_gp=1` since it's just a pickable listing
-      with no model behind it) since goalie scoring is still undefined (see
-      gap above). The "1 team" roster slot isn't modeled -- tracked manually
+      implementation. Goalies get a list ranked by the goalie model (`draft_pool.goalie_pool`,
+      `min_gp=1` for listing so backups stay pickable; unmodeled ones sort last). The "1 team" roster slot isn't modeled -- tracked manually
       outside the app.
 
 ## Setup

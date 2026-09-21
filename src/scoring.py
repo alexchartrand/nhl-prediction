@@ -27,6 +27,19 @@ SKATER_WEIGHTS = {
 }
 
 
+# Goalies score on results and their own (rare) offense. T/O is Hockey-
+# Reference's "ties plus OT/SO losses" -- ties don't exist post-2005, so it's
+# the overtime/shootout-loss column. W already includes OT/SO wins. A
+# shutout win is therefore worth W (2) + SO (2) = 4.
+GOALIE_WEIGHTS = {
+    "W": 2.0,
+    "T/O": 1.0,
+    "SO": 2.0,
+    "G": 5.0,
+    "A": 2.0,
+}
+
+
 def skater_points(df: pd.DataFrame) -> pd.Series:
     """Fantasy points for each skater row."""
     total = pd.Series(0.0, index=df.index)
@@ -35,8 +48,25 @@ def skater_points(df: pd.DataFrame) -> pd.Series:
     return total
 
 
+def goalie_points(df: pd.DataFrame) -> pd.Series:
+    """Fantasy points for each goalie row."""
+    total = pd.Series(0.0, index=df.index)
+    for col, weight in GOALIE_WEIGHTS.items():
+        total += df[col].fillna(0) * weight
+    return total
+
+
 def add_target(df: pd.DataFrame) -> pd.DataFrame:
-    """Return ``df`` with the fantasy-points target column attached."""
+    """Return ``df`` with the fantasy-points target column attached.
+
+    Goalie rows (``pos_group == "G"``, when present) use the goalie weights;
+    everything else scores as a skater.
+    """
     out = df.copy()
-    out[TARGET] = skater_points(out)
+    is_g = (out["pos_group"] == "G") if "pos_group" in out.columns else pd.Series(False, index=out.index)
+    out[TARGET] = 0.0
+    if (~is_g).any():
+        out.loc[~is_g, TARGET] = skater_points(out[~is_g])
+    if is_g.any() and "W" in out.columns:
+        out.loc[is_g, TARGET] = goalie_points(out[is_g])
     return out
