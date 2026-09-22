@@ -80,8 +80,8 @@ def get_goalies() -> pd.DataFrame:
 
 
 @st.cache_data
-def get_teams(_all_seasons: pd.DataFrame) -> pd.DataFrame:
-    return draft_pool.team_pool(_all_seasons)
+def get_teams() -> pd.DataFrame:
+    return draft_pool.team_pool()
 
 
 NEW_SEASON_OPTION = "+ New season..."
@@ -409,7 +409,8 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 
     uncheck_all_button("g_table", disabled=selected.empty)
 
-    display_cols = ["Player", "Team", "GP", "predicted_points", "pos_rank", "VORP", "Notes", "feature_season", "seasons_back"]
+    goalies = goalies.rename(columns={"predicted_points": "Projected Wins"})
+    display_cols = ["Player", "Team", "GP", "Projected Wins", "pos_rank", "VORP", "Notes"]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
@@ -428,10 +429,11 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
         )
 
 
-def teams_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict) -> None:
+def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> None:
     drafted = draft_state.drafted_player_ids(season)
-    teams = get_teams(all_seasons)
-    teams = teams[~teams["player_id"].isin(drafted)]
+    teams = draft_pool.undrafted_teams(
+        get_teams(), drafted, teams=settings["num_managers"], slots=settings["team_slots"]
+    )
 
     name_query = st.session_state.get("team_name_query", "")
     if name_query:
@@ -439,16 +441,20 @@ def teams_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels
     teams = teams.reset_index(drop=True)
 
     rows = [r for r in selection_rows("team_table") if r < len(teams)]
-    if rows:
-        selected = teams.iloc[rows[0]]
-        uncheck_all_button("team_table", label="Clear selection")
+    selected = teams.iloc[rows[0]] if rows else None
+
+    if selected is not None:
         pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
-        st.divider()
+    else:
+        pick_form(season, None, None, None, options, labels, key_prefix="team")
+    st.divider()
 
     st.text_input("Search team name", key="team_name_query")
 
-    display_cols = ["Team", "Code"]
-    st.caption(f"{len(teams)} available teams shown")
+    uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
+
+    display_cols = ["Team", "Code", "projected_wins", "win_delta", "pos_rank", "VORP"]
+    st.caption(f"{len(teams)} available teams shown, ranked by NHL.com's projected win total")
     render_selectable_table(teams, display_cols, key=table_key("team_table"))
 
     with st.expander("Show drafted teams"):
@@ -578,7 +584,7 @@ def main() -> None:
     with tab_g:
         goalies_tab(season, all_seasons, options, labels, settings)
     with tab_teams:
-        teams_tab(season, all_seasons, options, labels)
+        teams_tab(season, options, labels, settings)
     with tab_mypool:
         my_pool_tab(season, labels, settings)
     with tab_log:

@@ -29,6 +29,14 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
 ### Data gaps
 - Goalie stats are now loaded (see above); the skater export's goalie rows (assists only) are ignored.
 
+`data/nhl 2026-2027 projections/` — NHL.com's own 2026-27 projections, pasted as
+`goalies.txt`/`teams.txt`/`fowards.txt`/`defense.txt` (one numbered line per player/team,
+`Name, POS, TEAM: <value>`). The trailing number is **fantasy points** for `fowards.txt`/
+`defense.txt`, but **projected wins** for `goalies.txt` and `teams.txt` (per `teams.txt`'s
+own notes: team win totals are NHL.com's per-goalie win projections summed by team).
+`src/nhl_projections.py` parses `goalies.txt` and `teams.txt` only — see Status below for
+why F/D still use the in-repo model instead.
+
 ## Settled
 - **Goalie scoring**: 2 per win (regular or OT/SO), 1 per OT/SO loss (HR's `T/O` column),
   2 per shutout, 5 per goal, 2 per assist. `scoring.GOALIE_WEIGHTS`. A shutout win is 4.
@@ -129,6 +137,24 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
       pick, but stays changeable. A manual out-of-turn pick continues the snake from the overridden manager
       (not snap-back), and undo restores the prior on-clock manager. No order set = old behavior. A banner
       at the top shows on the clock / next.
+- [x] Goalie and team ranking now come from NHL.com's own 2026-27 projections instead of
+      this repo's models. `src/nhl_projections.py` parses `data/nhl 2026-2027 projections/
+      goalies.txt` and `teams.txt` (one numbered "Name, POS, TEAM: wins" line per player/
+      team -- the number is a **projected win total**, not fantasy points; a shared
+      "X or Y" committee line splits into one row per goalie, same win total/team).
+      Deliberate choice over the ElasticNet goalie model (`src/goalies.py`, kept but
+      no longer wired into the app): NHL.com's projections bake in this season's actual
+      starter/backup depth chart and offseason moves, which historical stats alone can't
+      see. `draft_pool.goalie_pool` now builds off the projection list directly (not
+      Hockey-Reference history), joining in GP by normalized name for display only --
+      a goalie with no HR history (true rookie) still gets ranked, just without that
+      column (`feature_season`/`seasons_back` dropped from the goalie table entirely --
+      they described the HR-history join, not the projection, and were confusing next
+      to a projections-based ranking). `draft_pool.team_pool`/`undrafted_teams` add VORP
+      ranking for the "1 team" slot (previously unranked, just an alphabetical pick list)
+      off NHL.com's projected win totals, live team names from the NHL API. `fowards.txt`/
+      `defense.txt` are unused -- F/D ranking is unchanged (still the in-repo model per-
+      season-pair trained on Hockey-Reference history).
 
 ## Setup
 ```
