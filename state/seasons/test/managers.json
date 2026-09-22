@@ -1,0 +1,12 @@
+{
+  "my_team_name": "Alex",
+  "other_managers": [
+    "Lacoste",
+    "Louis"
+  ],
+  "draft_order": [
+    "Lacoste",
+    "Louis",
+    "me"
+  ]
+}
