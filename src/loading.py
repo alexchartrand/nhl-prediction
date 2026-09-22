@@ -132,13 +132,13 @@ def load_all_seasons(data_dir: Path = DATA_DIR) -> pd.DataFrame:
 
 
 def load_goalie_season(season: str, data_dir: Path = DATA_DIR) -> pd.DataFrame:
-    """One row per goalie for ``season`` from ``goalies-{YYYY}-{YYYY}.txt``.
+    """One row per goalie for ``season`` from ``goalies-{YYYY}-{YYYY}.csv``.
 
     Same slug/traded-splits/League-Average quirks as the skater exports but a
     single header row and hyphenated file names (``2024-2025``). ``season``
     uses the project's ``2024_2025`` spelling.
     """
-    path = data_dir / f"goalies-{season.replace('_', '-')}.txt"
+    path = data_dir / f"goalies-{season.replace('_', '-')}.csv"
     df = pd.read_csv(path, encoding="utf-8")
     df = df.rename(columns={_RAW_ID_COL: ID_COL, "Tm": "Team"})
     df = df[df[ID_COL].notna() & (df[ID_COL].astype(str) != _RAW_ID_COL)]
@@ -152,7 +152,7 @@ def load_goalie_season(season: str, data_dir: Path = DATA_DIR) -> pd.DataFrame:
 
 def available_goalie_seasons(data_dir: Path = DATA_DIR) -> list[str]:
     return sorted(
-        p.stem.removeprefix("goalies-").replace("-", "_") for p in data_dir.glob("goalies-*.txt")
+        p.stem.removeprefix("goalies-").replace("-", "_") for p in data_dir.glob("goalies-*.csv")
     )
 
 
