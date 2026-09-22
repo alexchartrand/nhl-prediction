@@ -44,6 +44,14 @@ def board_path(season: str) -> Path:
     return rank.OUTPUT_PATH.parent / f"draft_board_{draft_state.slugify(season)}.csv"
 
 
+def goalie_board_path(season: str) -> Path:
+    return rank.OUTPUT_PATH.parent / f"goalie_board_{draft_state.slugify(season)}.csv"
+
+
+def team_board_path(season: str) -> Path:
+    return rank.OUTPUT_PATH.parent / f"team_board_{draft_state.slugify(season)}.csv"
+
+
 def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
     board = rank.build_draft_board(
         teams=settings["num_managers"],
@@ -54,6 +62,22 @@ def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
     board.to_csv(path, index=False)
     st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
     return board
+
+
+def _rebuild_goalies(season: str) -> pd.DataFrame:
+    pool = draft_pool.goalie_pool(get_goalie_seasons())
+    path = goalie_board_path(season)
+    path.parent.mkdir(exist_ok=True)
+    pool.to_csv(path, index=False)
+    return pool
+
+
+def _rebuild_teams(season: str) -> pd.DataFrame:
+    pool = draft_pool.team_pool()
+    path = team_board_path(season)
+    path.parent.mkdir(exist_ok=True)
+    pool.to_csv(path, index=False)
+    return pool
 
 
 @st.cache_data
@@ -75,13 +99,19 @@ def get_goalie_seasons() -> pd.DataFrame:
 
 
 @st.cache_data
-def get_goalies() -> pd.DataFrame:
-    return draft_pool.goalie_pool(get_goalie_seasons())
+def get_goalies(season: str) -> pd.DataFrame:
+    path = goalie_board_path(season)
+    if path.exists():
+        return pd.read_csv(path)
+    return _rebuild_goalies(season)
 
 
 @st.cache_data
-def get_teams() -> pd.DataFrame:
-    return draft_pool.team_pool()
+def get_teams(season: str) -> pd.DataFrame:
+    path = team_board_path(season)
+    if path.exists():
+        return pd.read_csv(path)
+    return _rebuild_teams(season)
 
 
 NEW_SEASON_OPTION = "+ New season..."
@@ -450,7 +480,7 @@ def forwards_defense_tab(
 def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labels: dict, settings: dict) -> None:
     drafted = draft_state.drafted_player_ids(season)
     goalies = draft_pool.undrafted_goalies(
-        get_goalies(), drafted, teams=settings["num_managers"], slots=settings["goalies"]
+        get_goalies(season), drafted, teams=settings["num_managers"], slots=settings["goalies"]
     )
 
     name_query = st.session_state.get("g_name_query", "")
@@ -498,7 +528,7 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> None:
     drafted = draft_state.drafted_player_ids(season)
     teams = draft_pool.undrafted_teams(
-        get_teams(), drafted, teams=settings["num_managers"], slots=settings["team_slots"]
+        get_teams(season), drafted, teams=settings["num_managers"], slots=settings["team_slots"]
     )
 
     name_query = st.session_state.get("team_name_query", "")
@@ -614,7 +644,11 @@ def main() -> None:
     if st.sidebar.button("Recompute draft board"):
         with st.spinner("Recomputing draft board (refits models, hits the live NHL API)..."):
             _rebuild_board(season, settings)
+            _rebuild_goalies(season)
+            _rebuild_teams(season)
         get_board.clear()
+        get_goalies.clear()
+        get_teams.clear()
         st.rerun()
     if st.session_state.get("team_fetch_complete") is False:
         st.sidebar.warning(

@@ -155,6 +155,11 @@ why F/D still use the in-repo model instead.
       off NHL.com's projected win totals, live team names from the NHL API. `fowards.txt`/
       `defense.txt` are unused -- F/D ranking is unchanged (still the in-repo model per-
       season-pair trained on Hockey-Reference history).
+- [x] Goalie/team pools now persist per-season too (`output/goalie_board_<season>.csv`,
+      `output/team_board_<season>.csv`), same pattern as `draft_board_<season>.csv`.
+      Previously they were only `@st.cache_data`-memoized, so every app restart re-hit the
+      live NHL API (rate-limited) to rebuild them. "Recompute draft board" rebuilds and
+      re-saves all three now, not just the F/D board.
 
 ## Setup
 ```
