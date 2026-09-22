@@ -295,6 +295,11 @@ def pick_form(
             )
         else:
             draft_state.add_pick(season, player_id, player_name, pos_group, manager)
+            # Remount the table under a new key so the just-drafted player's
+            # checkbox doesn't stay checked (now pointing at a different row
+            # once the player drops out of the undrafted list).
+            table_base = f"{key_prefix}_table"
+            st.session_state[f"{table_base}_version"] = st.session_state.get(f"{table_base}_version", 0) + 1
             st.rerun()
 
 
