@@ -254,14 +254,27 @@ def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: st
         st.markdown(st.session_state[result_key])
 
 
-def pick_form(season: str, player_id: str | None, player_name: str | None, pos_group: str | None, options: list[str], labels: dict, key_prefix: str) -> None:
+ROSTER_SETTING_KEY = {"F": "forwards", "D": "defense", "G": "goalies", "TEAM": "team_slots"}
+
+
+def pick_form(
+    season: str,
+    player_id: str | None,
+    player_name: str | None,
+    pos_group: str | None,
+    options: list[str],
+    labels: dict,
+    key_prefix: str,
+    settings: dict,
+) -> None:
     enabled = player_id is not None
     # Defaults to whoever's on the clock (snake order) but stays changeable. The
     # widget key includes the pick count so the default re-applies after every
     # pick, while a manual override sticks until the pick is made.
     active = draft_state.active_manager(season)
     index = options.index(active) if active in options else 0
-    n_picks = len(draft_state.load_picks(season))
+    picks = draft_state.load_picks(season)
+    n_picks = len(picks)
     with st.form(f"{key_prefix}_pick_form"):
         manager = st.selectbox(
             "Drafted by",
@@ -273,8 +286,16 @@ def pick_form(season: str, player_id: str | None, player_name: str | None, pos_g
         )
         submitted = st.form_submit_button(f"Draft {player_name}" if enabled else "Draft", disabled=not enabled)
     if submitted and enabled:
-        draft_state.add_pick(season, player_id, player_name, pos_group, manager)
-        st.rerun()
+        limit = settings[ROSTER_SETTING_KEY[pos_group]]
+        have = ((picks["manager"] == manager) & (picks["pos_group"] == pos_group)).sum()
+        if have >= limit:
+            st.error(
+                f"{labels.get(manager, manager)} already has {have} {POS_GROUP_LABELS[pos_group]} "
+                f"(limit {limit}) -- undo a pick before drafting another."
+            )
+        else:
+            draft_state.add_pick(season, player_id, player_name, pos_group, manager)
+            st.rerun()
 
 
 def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str, selection_mode: str = "single-row"):
@@ -294,6 +315,46 @@ def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str,
     if selection_mode == "multi-row":
         return df.iloc[rows]
     return df.iloc[rows[0]] if rows else None
+
+
+def live_search_input(label: str, key: str, debounce_ms: int = 300) -> None:
+    """A search-style text_input (``type="search"`` gets the browser's native
+    "x" clear button for free) that filters live as the user types, instead
+    of Streamlit's default text_input behavior which only commits a new
+    value to session_state on Enter or losing focus. Injects a tiny script
+    that watches the underlying <input> (found by its label, since Streamlit
+    doesn't expose a stable id) and, ``debounce_ms`` after the user stops
+    typing or clears it, dispatches a synthetic Enter keypress -- the same
+    event Streamlit's own commit-on-Enter handler already listens for, so
+    this doesn't fight it or duplicate the value it stores."""
+    st.text_input(label, key=key, type="search")
+    st.iframe(
+        f"""
+        <script>
+        (function() {{
+            const doc = window.parent.document;
+            function attach() {{
+                const el = doc.querySelector('input[aria-label="{label}"]');
+                if (!el || el.dataset.liveSearchAttached) return;
+                el.dataset.liveSearchAttached = "1";
+                let timer = null;
+                el.addEventListener("input", () => {{
+                    clearTimeout(timer);
+                    timer = setTimeout(() => {{
+                        el.dispatchEvent(new KeyboardEvent("keydown", {{
+                            key: "Enter", code: "Enter", keyCode: 13, which: 13,
+                            bubbles: true, cancelable: true,
+                        }}));
+                    }}, {debounce_ms});
+                }});
+            }}
+            attach();
+            new MutationObserver(attach).observe(doc.body, {{childList: true, subtree: true}});
+        }})();
+        </script>
+        """,
+        height=1,
+    )
 
 
 def table_key(base_key: str) -> str:
@@ -335,7 +396,7 @@ def forwards_defense_tab(
     filtered = available
     if pos_filter != "All":
         filtered = filtered[filtered["pos_group"] == pos_filter]
-    if name_query:
+    if len(name_query) >= 2:
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
     filtered = filtered.reset_index(drop=True)
 
@@ -347,16 +408,16 @@ def forwards_defense_tab(
 
     if len(selected) == 1:
         row = selected.iloc[0]
-        pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd")
+        pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd", settings=settings)
     else:
-        pick_form(season, None, None, None, options, labels, key_prefix="fd")
+        pick_form(season, None, None, None, options, labels, key_prefix="fd", settings=settings)
     st.divider()
 
     col1, col2 = st.columns([1, 2])
     with col1:
         st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
     with col2:
-        st.text_input("Search player name", key="fd_name_query")
+        live_search_input("Search player name", key="fd_name_query")
 
     uncheck_all_button("fd_table", disabled=selected.empty)
 
@@ -388,7 +449,7 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
     )
 
     name_query = st.session_state.get("g_name_query", "")
-    if name_query:
+    if len(name_query) >= 2:
         goalies = goalies[goalies["Player"].str.contains(name_query, case=False, na=False)]
     goalies = goalies.reset_index(drop=True)
 
@@ -400,12 +461,12 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 
     if len(selected) == 1:
         row = selected.iloc[0]
-        pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g")
+        pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g", settings=settings)
     else:
-        pick_form(season, None, None, None, options, labels, key_prefix="g")
+        pick_form(season, None, None, None, options, labels, key_prefix="g", settings=settings)
     st.divider()
 
-    st.text_input("Search goalie name", key="g_name_query")
+    live_search_input("Search goalie name", key="g_name_query")
 
     uncheck_all_button("g_table", disabled=selected.empty)
 
@@ -436,7 +497,7 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
     )
 
     name_query = st.session_state.get("team_name_query", "")
-    if name_query:
+    if len(name_query) >= 2:
         teams = teams[teams["Team"].str.contains(name_query, case=False, na=False)]
     teams = teams.reset_index(drop=True)
 
@@ -444,12 +505,12 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
     selected = teams.iloc[rows[0]] if rows else None
 
     if selected is not None:
-        pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team")
+        pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team", settings=settings)
     else:
-        pick_form(season, None, None, None, options, labels, key_prefix="team")
+        pick_form(season, None, None, None, options, labels, key_prefix="team", settings=settings)
     st.divider()
 
-    st.text_input("Search team name", key="team_name_query")
+    live_search_input("Search team name", key="team_name_query")
 
     uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
 
