@@ -123,11 +123,16 @@ def add_projection_only_players(
     return pd.concat([predicted, pd.DataFrame(rows)], ignore_index=True)
 
 
-def add_vorp(df: pd.DataFrame, teams: int, roster: dict) -> pd.DataFrame:
+def add_vorp(df: pd.DataFrame, teams: int, roster: dict, filled: dict | None = None) -> pd.DataFrame:
+    """Replacement level per position = the last player who'd still make a
+    roster: the ``teams * slots``-th best, or, mid-draft, the (open slots
+    left)-th best of ``df`` when ``filled`` gives how many of that position's
+    slots are already taken (see draft_pool.undrafted_board)."""
+    filled = filled or {}
     ranked = []
     for pos, slots in roster.items():
         sub = df[df["pos_group"] == pos].sort_values("predicted_points", ascending=False).reset_index(drop=True)
-        cutoff = min(teams * slots, len(sub))
+        cutoff = min(max(teams * slots - filled.get(pos, 0), 1), len(sub))
         replacement = sub.loc[cutoff - 1, "predicted_points"]
         sub["pos_rank"] = sub.index + 1
         sub["replacement_level"] = replacement

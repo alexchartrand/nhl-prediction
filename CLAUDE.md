@@ -137,9 +137,13 @@ see Status below.
       `state/picks.json` / `state/managers.json` (JSON, survives restarts) so
       a multi-hour live draft isn't lost on a browser/process restart. VORP
       recomputes live (`src/draft_pool.undrafted_board`) against only
-      undrafted players, so replacement level shifts as a position gets
-      drafted down -- reuses `rank.add_vorp` rather than a second
-      implementation. Goalies get a list ranked by the goalie model (`draft_pool.goalie_pool`,
+      undrafted players, with the replacement level at the (open slots left at that
+      position)-th best remaining player (`add_vorp`'s `filled`, counting live picks +
+      keepers) -- so it stays put when the draft follows projection order and moves only on
+      reaches/keepers/position runs. (Until 2026-09-23 the cutoff stayed at teams x slots
+      among the remaining players, which slid the replacement level down as players were
+      drafted and inflated VORP at positions drafted faster.) Reuses `rank.add_vorp` rather
+      than a second implementation. Goalies get a list ranked by the goalie model (`draft_pool.goalie_pool`,
       `min_gp=1` for listing so backups stay pickable; unmodeled ones sort last). The "1 team" roster slot isn't modeled -- tracked manually
       outside the app.
 

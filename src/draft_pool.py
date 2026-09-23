@@ -24,15 +24,22 @@ def undrafted_board(
     teams: int,
     roster: dict,
 ) -> pd.DataFrame:
-    """``board`` (from ``rank.build_draft_board()``) minus drafted players,
-    with pos_rank/VORP/replacement_level recomputed on who's left -- so
-    replacement level shifts as a position gets drafted down. ``teams``/
-    ``roster`` must match what the board was built with (see draft_state
-    settings) or the replacement level drifts from the one the board's own
-    VORP column was computed against."""
+    """``board`` (from ``rank.build_draft_board()``) minus drafted players
+    (live picks and keepers), with pos_rank/VORP/replacement_level
+    recomputed on who's left. The replacement level is the (open slots
+    left)-th best remaining player at each position, so it only moves when
+    the draft departs from projection order (a reach, a keeper, a run on a
+    position) -- not simply because players are being drafted."""
     remaining = board[~board["player_id"].isin(drafted_ids)].copy()
     remaining = remaining.drop(columns=["pos_rank", "VORP", "replacement_level"], errors="ignore")
-    return rank.add_vorp(remaining, teams=teams, roster=roster).sort_values("VORP", ascending=False).reset_index(drop=True)
+    return rank.add_vorp(
+        remaining, teams=teams, roster=roster, filled=_filled_slots(board, drafted_ids)
+    ).sort_values("VORP", ascending=False).reset_index(drop=True)
+
+
+def _filled_slots(pool: pd.DataFrame, drafted_ids: set[str]) -> dict:
+    """Roster slots already taken per pos_group, from drafted rows of ``pool``."""
+    return pool.loc[pool["player_id"].isin(drafted_ids), "pos_group"].value_counts().to_dict()
 
 
 def goalie_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -> pd.DataFrame:
@@ -74,11 +81,11 @@ def goalie_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON)
 
 def undrafted_goalies(pool: pd.DataFrame, drafted_ids: set[str], teams: int, slots: int) -> pd.DataFrame:
     """``goalie_pool`` minus drafted goalies, VORP'd against the
-    ``teams * slots``-th best goalie left (same replacement logic as the F/D
-    board)."""
+    (open goalie slots left)-th best goalie left (same replacement logic as
+    the F/D board)."""
     remaining = pool[~pool["player_id"].isin(drafted_ids)].copy()
     if slots >= 1 and not remaining.empty:
-        remaining = rank.add_vorp(remaining, teams=teams, roster={"G": slots})
+        remaining = rank.add_vorp(remaining, teams=teams, roster={"G": slots}, filled=_filled_slots(pool, drafted_ids))
     else:
         remaining = remaining.sort_values("predicted_points", ascending=False)
         for col in ("pos_rank", "VORP", "replacement_level"):
@@ -102,11 +109,11 @@ def team_pool() -> pd.DataFrame:
 
 def undrafted_teams(pool: pd.DataFrame, drafted_ids: set[str], teams: int, slots: int) -> pd.DataFrame:
     """``team_pool`` minus drafted teams, VORP'd against the
-    ``teams * slots``-th best team left (same replacement logic as the F/D
-    board)."""
+    (open team slots left)-th best team left (same replacement logic as the
+    F/D board)."""
     remaining = pool[~pool["player_id"].isin(drafted_ids)].copy()
     if slots >= 1 and not remaining.empty:
-        remaining = rank.add_vorp(remaining, teams=teams, roster={"TEAM": slots})
+        remaining = rank.add_vorp(remaining, teams=teams, roster={"TEAM": slots}, filled=_filled_slots(pool, drafted_ids))
     else:
         remaining = remaining.sort_values("predicted_points", ascending=False)
         for col in ("pos_rank", "VORP", "replacement_level"):
