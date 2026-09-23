@@ -18,11 +18,13 @@ recent season was injury-shortened -- so a player who missed most of
 judged on a handful of noisy games. ``seasons_back``/``feature_season`` in
 the output show when that fallback kicked in.
 
-True rookies with zero NHL history in any of the loaded seasons have no
-fallback season to use and are absent from the board -- there is no stat
-history to build a prediction from. That's a real gap for draft prep, not
-a bug; covering it would need external prospect data (junior/AHL stats,
-draft rankings), which isn't part of this dataset.
+Rookies with no usable NHL history (none, or only a few call-up games below
+``MIN_GP``) can't be predicted by the model. Those NHL.com projects anyway
+(``data/nhl 2026-2027 projections/fowards.txt``/``defense.txt``) are added
+with NHL.com's fantasy-point projection standing in as ``predicted_points``
+(``source == "nhl.com"``), so they get a VORP and a board rank alongside
+modeled players -- two different projection sources in one ranking. Every
+player also carries ``nhl_projection`` for side-by-side reference.
 
 Goalies are out of scope until goalie stats are added (see CLAUDE.md). The
 "1 team" roster slot isn't modeled at all.
@@ -38,10 +40,11 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import loading
 import nhl_api
+import nhl_projections
 import notable
 import scoring
 from features import FEATURE_COLS, MIN_GP, load_scored_seasons
-from train import make_elasticnet
+from train import fit_calibration, full_length_seasons, make_elasticnet
 
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "output" / "draft_board.csv"
 LATEST_SEASON = "2025_2026"
@@ -55,12 +58,15 @@ MODELED_POSITIONS = ("F", "D")
 MAX_SEASONS_BACK = 1
 
 
-def fit_production_models(pairs: pd.DataFrame) -> dict:
-    """ElasticNet per position, fit on every available season-pair."""
+def fit_production_models(pairs: pd.DataFrame, df_all: pd.DataFrame) -> dict:
+    """ElasticNet per position, fit on every available season-pair, plus its
+    calibration (train.Calibration) back onto a full-season points scale."""
+    full_seasons = full_length_seasons(df_all)
     models = {}
     for pos in MODELED_POSITIONS:
         sub = pairs[pairs["pos_group"] == pos]
-        models[pos] = make_elasticnet().fit(sub[FEATURE_COLS], sub[scoring.TARGET])
+        model = make_elasticnet().fit(sub[FEATURE_COLS], sub[scoring.TARGET])
+        models[pos] = (model, fit_calibration(make_elasticnet, sub, full_seasons))
     return models
 
 
@@ -71,10 +77,50 @@ def predict_upcoming(models: dict, df_all: pd.DataFrame, as_of_season: str = LAT
     df = df[df["pos_group"].isin(MODELED_POSITIONS)].copy()
 
     df["predicted_points"] = float("nan")
-    for pos, model in models.items():
+    for pos, (model, calibrate) in models.items():
         mask = df["pos_group"] == pos
-        df.loc[mask, "predicted_points"] = model.predict(df.loc[mask, FEATURE_COLS])
+        df.loc[mask, "predicted_points"] = calibrate(model.predict(df.loc[mask, FEATURE_COLS]))
     return df
+
+
+def add_projection_only_players(
+    predicted: pd.DataFrame, df_all: pd.DataFrame, as_of_season: str = LATEST_SEASON
+) -> pd.DataFrame:
+    """Adds ``nhl_projection`` to every modeled player, and appends one row
+    per NHL.com-projected F/D the model couldn't rank, with that projection
+    as ``predicted_points``. Such a player keeps his Hockey-Reference
+    ``player_id``/Age/GP if he has any history (a few call-up games), so
+    season history still works in the app; otherwise he gets a synthetic
+    ``proj_`` id (same convention as draft_pool.goalie_pool). Team always
+    comes from NHL.com, which already reflects where he's playing."""
+    proj = nhl_projections.load_skater_projections()
+    matched = nhl_projections.match_projection_rows(predicted, proj)
+    predicted = predicted.assign(
+        nhl_projection=proj["nhl_projection"].reindex(matched.astype("float").values).values,
+        source="model",
+    )
+
+    missing = proj.drop(index=matched.dropna().astype(int).unique())
+    history = df_all[df_all["season"].map(notable._season_year) <= notable._season_year(as_of_season)]
+    latest = history.sort_values("season", key=lambda s: s.map(notable._season_year)).drop_duplicates(
+        loading.ID_COL, keep="last"
+    )
+    latest = latest[latest["pos_group"].isin(MODELED_POSITIONS)].reset_index(drop=True)
+    hist_idx = nhl_projections.match_projection_rows(missing, latest)
+
+    rows = []
+    for (_, p), h in zip(missing.iterrows(), hist_idx):
+        row = {
+            "Player": p["Player"], "pos_group": p["pos_group"], "Team": p["Team"], "Pos": p["pos_group"],
+            "predicted_points": float(p["nhl_projection"]), "nhl_projection": p["nhl_projection"],
+            "source": "nhl.com",
+            loading.ID_COL: "proj_" + nhl_api.normalize_name(p["Player"]).replace(" ", "_"),
+        }
+        if pd.notna(h):
+            hist = latest.loc[int(h)]
+            row.update({loading.ID_COL: hist[loading.ID_COL], "Age": hist["Age"], "GP": hist["GP"], "Pos": hist["Pos"]})
+        rows.append(row)
+    return pd.concat([predicted, pd.DataFrame(rows)], ignore_index=True)
 
 
 def add_vorp(df: pd.DataFrame, teams: int, roster: dict) -> pd.DataFrame:
@@ -107,8 +153,8 @@ def build_draft_board(
     pairs = loading.make_training_pairs(
         df_all, feature_cols=FEATURE_COLS + ["Player", "pos_group"], min_feature_gp=MIN_GP
     )
-    models = fit_production_models(pairs)
-    predicted = predict_upcoming(models, df_all)
+    models = fit_production_models(pairs, df_all)
+    predicted = add_projection_only_players(predict_upcoming(models, df_all), df_all)
     ranked = add_vorp(predicted, teams=teams, roster=roster)
     ranked = notable.add_notable_flags(ranked, df_all, LATEST_SEASON)
 
@@ -121,21 +167,24 @@ def build_draft_board(
     ranked["team_change"] = nhl_api.detect_team_changes(ranked, team_map)
     ranked = nhl_api.apply_live_team(ranked, team_map)
     if team_map and team_fetch_complete:
-        ranked["no_team"] = nhl_api.detect_no_team(ranked, team_map)
+        # NHL.com-only prospects may not be on a live NHL roster yet, but
+        # NHL.com projects them to play -- "No Team" would be misleading.
+        ranked["no_team"] = nhl_api.detect_no_team(ranked, team_map) & (ranked["source"] != "nhl.com")
     else:
         ranked["no_team"] = False
+    ranked["rookie"] = notable.is_rookie(ranked[loading.ID_COL], ranked["Age"], df_all, LATEST_SEASON)
     ranked["Notes"] = [
-        notable.combine_notes(f, t, c, n)
-        for f, t, c, n in zip(
-            ranked["fragile"], ranked["trend"], ranked["team_change"], ranked["no_team"]
+        notable.combine_notes(f, t, c, n, r)
+        for f, t, c, n, r in zip(
+            ranked["fragile"], ranked["trend"], ranked["team_change"], ranked["no_team"], ranked["rookie"]
         )
     ]
 
     cols = [
         loading.ID_COL, "Player", "Team", "Pos", "pos_group", "Age", "GP",
         "feature_season", "seasons_back",
-        "predicted_points", "pos_rank", "VORP",
-        "fragile", "trend", "team_change", "Notes",
+        "predicted_points", "nhl_projection", "source", "pos_rank", "VORP",
+        "fragile", "trend", "team_change", "rookie", "Notes",
     ]
     result = ranked.sort_values("VORP", ascending=False)[cols].reset_index(drop=True)
     # Not persisted to the CSV -- read by app.py right after a rebuild, in

@@ -34,6 +34,15 @@ DECLINE_MIN_AGE = 30
 RISING_PCT = 0.25
 RISING_MAX_AGE = 23
 
+# NHL's own rookie definition (Calder eligibility) for the upcoming season:
+# never more than ROOKIE_MAX_SEASON_GP games in one prior season, never
+# ROOKIE_CALLUP_GP+ games in each of two prior seasons, and not older than
+# ROOKIE_MAX_AGE -- so a player with a handful of late-season call-up games
+# still counts as a rookie, same as NHL.com would call him.
+ROOKIE_MAX_SEASON_GP = 25
+ROOKIE_CALLUP_GP = 6
+ROOKIE_MAX_AGE = 26
+
 
 def _season_year(season: str) -> int:
     return int(season.split("_")[0])
@@ -93,8 +102,29 @@ def add_notable_flags(board: pd.DataFrame, df_all: pd.DataFrame, as_of_season: s
     return out
 
 
+def is_rookie(player_ids: pd.Series, ages: pd.Series, df_all: pd.DataFrame, as_of_season: str) -> pd.Series:
+    """Whether each player is a rookie next season (see ROOKIE_* above), from
+    his GP history at or before ``as_of_season``. A player with no history
+    at all (``player_id`` not in ``df_all``) is a rookie regardless of age.
+    ``ages`` is age during ``as_of_season`` (NaN = unknown, not held against
+    him)."""
+    history = df_all[df_all["season"].map(_season_year) <= _season_year(as_of_season)]
+    gp = history.groupby(loading.ID_COL)["GP"]
+    max_gp = gp.max()
+    callup_seasons = gp.apply(lambda g: (g >= ROOKIE_CALLUP_GP).sum())
+
+    out = []
+    for pid, age in zip(player_ids, ages):
+        if pid not in max_gp.index:
+            out.append(True)
+            continue
+        young_enough = pd.isna(age) or age + 1 <= ROOKIE_MAX_AGE
+        out.append(bool(max_gp[pid] <= ROOKIE_MAX_SEASON_GP and callup_seasons[pid] < 2 and young_enough))
+    return pd.Series(out, index=player_ids.index)
+
+
 def combine_notes(
-    fragile: bool, trend: str | None, team_change: bool | None, no_team: bool = False
+    fragile: bool, trend: str | None, team_change: bool | None, no_team: bool = False, rookie: bool = False
 ) -> str:
     """Single source of truth for the 'Notes' string's wording and order.
 
@@ -107,6 +137,8 @@ def combine_notes(
     none of them (retired or unsigned).
     """
     tags = []
+    if rookie:
+        tags.append("Rookie")
     if no_team:
         tags.append("No Team")
     if team_change:

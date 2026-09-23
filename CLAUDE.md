@@ -34,8 +34,10 @@ handling since the model runs on per-game rates, but keep an eye out if it behav
 `Name, POS, TEAM: <value>`). The trailing number is **fantasy points** for `fowards.txt`/
 `defense.txt`, but **projected wins** for `goalies.txt` and `teams.txt` (per `teams.txt`'s
 own notes: team win totals are NHL.com's per-goalie win projections summed by team).
-`src/nhl_projections.py` parses `goalies.txt` and `teams.txt` only — see Status below for
-why F/D still use the in-repo model instead.
+`src/nhl_projections.py` parses all four; `goalies.txt`/`teams.txt` drive ranking, while
+`fowards.txt`/`defense.txt` are shown as a reference "NHL.com Projection" column in the
+app's F/D table and stand in as `predicted_points` only for rookies the model can't rank —
+see Status below.
 
 ## Settled
 - **Goalie scoring**: 2 per win (regular or OT/SO), 1 per OT/SO loss (HR's `T/O` column),
@@ -74,6 +76,17 @@ why F/D still use the in-repo model instead.
       loser; recheck this comparison again if more seasons get added. Stuck to 2016-17+ to
       avoid mixing in the pre-3-on-3-OT scoring environment. Feature list in
       `src/features.py`. Trained models saved to `models/*.joblib`.
+- [x] Calibration of F/D predictions (`train.Calibration`, applied in `rank.predict_upcoming`):
+      raw ElasticNet under-predicted the best players badly (2025-26 holdout top-10: F predicted
+      82.9 vs actual 98.6, D 52.7 vs 66.2). Two causes: the shortened 2019-20/2020-21 *target*
+      seasons (top-30 residuals of -5 to -20 there vs +3 to +13 in every full season), and
+      points being roughly rate x TOI, a curve the linear model can't bend to. Fix: quadratic
+      map raw -> actual, fit on out-of-fold predictions for full-length target seasons only
+      (league max GP >= `train.FULL_SEASON_GP`). Order-preserving (Spearman unchanged). Holdout:
+      F MAE 10.65->10.05 (now beats LightGBM's 10.52), top-10 95.9 vs 98.6 actual; D MAE
+      7.85->7.61, top-10 60.0 vs 66.2. Tried pro-rating short-season targets to 82 GP instead
+      / in addition -- no better. `python src/train.py` prints the calibrated rows too.
+      F/D mix of the board's top 50 barely moved (18 D before and after).
 - [x] Add value-over-replacement draft ranking. `src/rank.py`, run directly to regenerate
       `output/draft_board.csv`. Pool size confirmed as **12 teams**; replacement cutoff =
       108 forwards / 60 defense (9F + 5D roster x 12 teams). Uses ElasticNet (won the
@@ -152,9 +165,24 @@ why F/D still use the in-repo model instead.
       they described the HR-history join, not the projection, and were confusing next
       to a projections-based ranking). `draft_pool.team_pool`/`undrafted_teams` add VORP
       ranking for the "1 team" slot (previously unranked, just an alphabetical pick list)
-      off NHL.com's projected win totals, live team names from the NHL API. `fowards.txt`/
-      `defense.txt` are unused -- F/D ranking is unchanged (still the in-repo model per-
-      season-pair trained on Hockey-Reference history).
+      off NHL.com's projected win totals, live team names from the NHL API. F/D ranking is
+      unchanged (still the in-repo model trained on Hockey-Reference history);
+      every F/D row carries NHL.com's number as `nhl_projection` ("NHL.com Projection" in the
+      app), joined by (normalized name, pos_group) with a nickname fallback
+      (`nhl_projections.match_projection_rows`: last name + first-name 3-letter prefix for
+      Josh/Joshua, plus `_FIRST_NAME_ALIASES` for Tommy/Thomas), used only when unique on
+      both sides so brothers (Ilya/Aliaksei Protas) never cross-match.
+- [x] NHL.com-only rookies on the F/D board: `rank.add_projection_only_players` appends
+      every NHL.com-projected F/D the model couldn't rank (no history, or only call-up games
+      under `MIN_GP` -- McKenna, Martone, Stenberg, ... 10 players for 2026-27) with NHL.com's
+      projection as `predicted_points` (`source == "nhl.com"`), so they get VORP/pos_rank.
+      Deliberately mixes two projection sources in one ranking. They keep their HR
+      `player_id` if they have any call-up games, else a synthetic `proj_` id; Team comes
+      from NHL.com; never tagged "No Team". A "Rookie" Notes tag (`notable.is_rookie`)
+      follows the NHL's Calder rule: never >25 GP in a season, never 6+ GP in two seasons,
+      age <=26 -- so it also tags modeled players with thin call-up histories (Frondell,
+      Cole Hutson), whose model predictions rest on 12-14 GP and run well under NHL.com's.
+      `app.get_board` rebuilds a saved board that predates the `nhl_projection` column.
 - [x] Goalie/team pools now persist per-season too (`output/goalie_board_<season>.csv`,
       `output/team_board_<season>.csv`), same pattern as `draft_board_<season>.csv`.
       Previously they were only `@st.cache_data`-memoized, so every app restart re-hit the

@@ -38,6 +38,10 @@ from features import FEATURE_COLS, MIN_GP, load_scored_seasons
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HOLDOUT_TARGET_SEASON = "2025_2026"
 N_SPLITS = 5
+# A target season counts as full-length (usable for fitting the calibration
+# below) when some player played at least this many games in it -- excludes
+# 2019-20 (stopped at ~70 GP) and 2020-21 (56 GP).
+FULL_SEASON_GP = 82
 
 
 def build_dataset() -> pd.DataFrame:
@@ -85,6 +89,44 @@ def cv_predictions(make_model, X: pd.DataFrame, y: pd.Series, groups: pd.Series,
     return preds
 
 
+def full_length_seasons(df_all: pd.DataFrame) -> set[str]:
+    max_gp = df_all.groupby("season")["GP"].max()
+    return set(max_gp[max_gp >= FULL_SEASON_GP].index)
+
+
+class Calibration:
+    """Quadratic map from raw ElasticNet predictions to expected fantasy
+    points, fit on out-of-fold predictions for full-length target seasons.
+
+    Fixes two biases that leave the raw model well under real totals for the
+    best players (holdout top-10: ~15 points low for F, ~13 for D): points
+    behave roughly like rate x ice time, a curve a linear model can't bend
+    to, and the shortened 2019-20/2020-21 target seasons teach it that a
+    strong player's season total is lower than a full season gives. Fitting
+    only on full-season rows puts predictions back on a full 82-game scale
+    -- the same scale NHL.com's projections use, so the two are comparable.
+    Monotonic over the range used (input clamped at the parabola's vertex),
+    so within-position order never changes -- only the spread, which is what
+    drives F-vs-D VORP."""
+
+    def __init__(self, raw_pred: np.ndarray, y: np.ndarray):
+        self.coefs = np.polyfit(raw_pred, y, 2)
+        a, b, _ = self.coefs
+        self.floor = -b / (2 * a) if a > 0 else -np.inf
+
+    def __call__(self, raw_pred) -> np.ndarray:
+        return np.polyval(self.coefs, np.maximum(np.asarray(raw_pred, dtype=float), self.floor))
+
+
+def fit_calibration(make_model, pairs: pd.DataFrame, full_seasons: set[str]) -> Calibration:
+    """``pairs`` is one position group's training rows (FEATURE_COLS,
+    TARGET, player_id, target_season)."""
+    pairs = pairs.reset_index(drop=True)
+    oof = cv_predictions(make_model, pairs[FEATURE_COLS], pairs[scoring.TARGET], pairs["player_id"])
+    full = pairs["target_season"].isin(full_seasons).to_numpy()
+    return Calibration(oof[full], pairs.loc[full, scoring.TARGET].to_numpy())
+
+
 def eval_metrics(y_true, y_pred) -> dict:
     return {
         "MAE": mean_absolute_error(y_true, y_pred),
@@ -93,7 +135,7 @@ def eval_metrics(y_true, y_pred) -> dict:
     }
 
 
-def train_position(pairs: pd.DataFrame, pos_group: str) -> dict:
+def train_position(pairs: pd.DataFrame, pos_group: str, full_seasons: set[str]) -> dict:
     sub = pairs[pairs["pos_group"] == pos_group].reset_index(drop=True)
     train = sub[sub["target_season"] != HOLDOUT_TARGET_SEASON].reset_index(drop=True)
     test = sub[sub["target_season"] == HOLDOUT_TARGET_SEASON].reset_index(drop=True)
@@ -122,6 +164,17 @@ def train_position(pairs: pd.DataFrame, pos_group: str) -> dict:
         print(f"{name:<12}{'CV (train)':<12}{cv_m['MAE']:>8.2f}{cv_m['R2']:>8.3f}{cv_m['Spearman']:>10.3f}")
         print(f"{name:<12}{'holdout':<12}{te_m['MAE']:>8.2f}{te_m['R2']:>8.3f}{te_m['Spearman']:>10.3f}")
 
+    # Calibrated ElasticNet (what rank.py actually ranks with) -- the
+    # calibration is fit on train-only out-of-fold predictions, never the holdout.
+    calibrate = fit_calibration(make_elasticnet, train, full_seasons)
+    en_cal_pred = calibrate(en_test_pred)
+    cal_m = eval_metrics(y_test, en_cal_pred)
+    print(f"{'EN+calib':<12}{'holdout':<12}{cal_m['MAE']:>8.2f}{cal_m['R2']:>8.3f}{cal_m['Spearman']:>10.3f}")
+    order = np.argsort(-en_cal_pred)
+    for label, preds in (("raw", en_test_pred), ("calibrated", en_cal_pred)):
+        top = order[:10]
+        print(f"  holdout top-10 by prediction, {label:<10}: predicted {preds[top].mean():6.1f}, actual {y_test.iloc[top].mean():6.1f}")
+
     en_coefs = (
         pd.Series(en.named_steps["model"].coef_, index=FEATURE_COLS)
         .sort_values(key=abs, ascending=False)
@@ -142,5 +195,6 @@ def train_position(pairs: pd.DataFrame, pos_group: str) -> dict:
 
 if __name__ == "__main__":
     pairs = build_dataset()
+    full_seasons = full_length_seasons(load_scored_seasons())
     for pos in ("F", "D"):
-        train_position(pairs, pos)
+        train_position(pairs, pos, full_seasons)

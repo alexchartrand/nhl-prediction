@@ -84,7 +84,11 @@ def _rebuild_teams(season: str) -> pd.DataFrame:
 def get_board(season: str, settings: dict) -> pd.DataFrame:
     path = board_path(season)
     if path.exists():
-        return pd.read_csv(path)
+        board = pd.read_csv(path)
+        # Boards saved before the NHL.com projection column existed get
+        # rebuilt once so it (and the NHL.com-only rookies) show up.
+        if "nhl_projection" in board.columns:
+            return board
     return _rebuild_board(season, settings)
 
 
@@ -433,7 +437,7 @@ def forwards_defense_tab(
         filtered = filtered[filtered["pos_group"] == pos_filter]
     if len(name_query) >= 2:
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
-    filtered = filtered.reset_index(drop=True)
+    filtered = filtered.rename(columns={"nhl_projection": "NHL.com Projection"}).reset_index(drop=True)
 
     rows = [r for r in selection_rows("fd_table") if r < len(filtered)]
     selected = filtered.iloc[rows]
@@ -456,7 +460,7 @@ def forwards_defense_tab(
 
     uncheck_all_button("fd_table", disabled=selected.empty)
 
-    display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "pos_rank", "VORP"]
+    display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP"]
     st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
 
@@ -642,7 +646,11 @@ def main() -> None:
         updated = pd.Timestamp(path.stat().st_mtime, unit="s").strftime("%Y-%m-%d %H:%M")
         st.sidebar.caption(f"Draft board last computed: {updated}")
     if st.sidebar.button("Recompute draft board"):
-        with st.spinner("Recomputing draft board (refits models, hits the live NHL API)..."):
+        # Source-data caches too, so new files in data/ are picked up by the
+        # goalie rebuild (reads get_goalie_seasons) and the history views.
+        get_all_seasons.clear()
+        get_goalie_seasons.clear()
+        with st.spinner("Recomputing skater, goalie and team boards (refits models, hits the live NHL API)..."):
             _rebuild_board(season, settings)
             _rebuild_goalies(season)
             _rebuild_teams(season)
