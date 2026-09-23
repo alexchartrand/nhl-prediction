@@ -71,7 +71,7 @@ season's projections need a new folder and that constant bumped.
 
 ## Tech Stack
 - Python, pandas, scikit-learn, lightgbm (xgboost never used), streamlit (draft-day app),
-  requests (NHL API), mistralai + python-dotenv (the app's "Explore" button, see Status)
+  requests (NHL API, ESPN injuries), mistralai + python-dotenv (the app's "Explore" button, see Status)
 - Alexandre has prior experience with `requests`-only API integrations (see Intervals.icu project) — similar pattern likely reusable if pulling live NHL stats
 
 ## Status
@@ -120,8 +120,8 @@ season's projections need a new folder and that constant bumped.
 - [x] "Notes" draft-day tags: `src/notable.py` (fragile/declining/rising, local data only)
       + `src/nhl_api.py` (live NHL API team-change check) combine into a single `Notes`
       column (e.g. `"New Team • Fragile • Declining"`) shown in `app.py`'s F/D table.
-      No live "currently injured" flag -- the NHL's public API has no injury/IR endpoint
-      (checked; genuinely undocumented anywhere), out of scope entirely. Fragile/trend
+      The NHL's public API has no injury/IR endpoint; live injuries come from ESPN
+      instead (see the ESPN injury feed item below). Fragile/trend
       reuse data already loaded (`GP` history, `prior_fantasy_points_pg`), no network:
       fragile = GP short of `FRAGILE_GP_PCT` (75%) of that season's league-max in >=2
       qualifying (GP >= `MIN_GP`) seasons within the last 4 league seasons; trend = >=20%/25% point-rate move combined with an age
@@ -229,6 +229,22 @@ season's projections need a new folder and that constant bumped.
       Previously they were only `@st.cache_data`-memoized, so every app restart re-hit the
       live NHL API (rate-limited) to rebuild them. "Recompute draft board" rebuilds and
       re-saves all three now, not just the F/D board.
+- [x] Live ESPN injury feed (backlog #2): `src/espn_injuries.py` pulls
+      `site.api.espn.com/.../nhl/injuries` (unauthenticated) -- status, injury type,
+      `details.returnDate`, short comment. Games missed = days from max(today, opening night)
+      to the return date / regular-season length (dates from `api-web.nhle.com/v1/schedule/now`)
+      x `nhl_projections.games_per_team()`; `predicted_points` is scaled by (1 - that share)
+      before VORP, the original kept as `healthy_points`. Applied to the F/D board
+      (`rank.build_draft_board`) and goalie pool (`draft_pool.goalie_pool`). Notes tag
+      ("Injured ~23 GP", "Minor injury" when back by opening night, "Day-to-day",
+      "Suspended", "Holdout" for contract disputes) + an "Injury" detail column in the app.
+      Matched by (normalized name, pos_group) via `nhl_projections.match_projection_rows`
+      (nickname fallback: Ben/Benjamin Kindel). NHL.com's static `(INJ.)` markers are
+      **deliberately ignored** (user's call: a pasted snapshot goes stale) -- stripped by the
+      parser, no longer a goalie-pool column. Degrades like `nhl_api.py`: ESPN down -> no
+      tags, no adjustment, sidebar warning; schedule down -> tags but no adjustment.
+      Not done: valuing a long-term injury as "free-agent replacement minus one swap" (the
+      scaling alone already drops e.g. Troy Terry 62 -> 45), and a manual games-missed override.
 - [x] Keepers (K1 in `backlog.md`): a manager's last pick is his keeper, kept into the next
       season as his **last-round pick** (he skips the final round); skaters only, one per manager,
       no season limit. Entered before the draft in the sidebar "Keepers from last season" box,

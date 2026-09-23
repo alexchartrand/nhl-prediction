@@ -72,6 +72,9 @@ data/nhl 2026-2027 projections/*.txt → nhl_projections.py (goalie/team ranking
    row also shows NHL.com's projection for reference. Also attaches
    draft-day "Notes" tags (`src/notable.py` for fragile/declining/rising/
    rookie, `src/nhl_api.py` for live "New Team" / "No Team" checks).
+   Players on ESPN's live injury list (`src/espn_injuries.py`) get an
+   injury tag and have their points scaled down by the share of the season
+   they're expected to miss (from ESPN's return date).
 7. **Goalies and teams** (`src/draft_pool.py`) — ranked off NHL.com's
    projected wins, which bake in this season's depth charts. Goalie wins are
    converted to fantasy points with each goalie's (shrunk) historical
@@ -173,12 +176,13 @@ Each fall, once Hockey-Reference has a full prior-season export available:
   number, so a rookie NHL.com leaves out isn't on the board.
 - **Two projection sources in one ranking.** F/D are the in-repo model
   (plus NHL.com for rookies); goalies and teams are NHL.com's projections.
-- **No live injury flag.** The NHL's public API has no injury/IR endpoint,
-  so "injured" and "retired" are indistinguishable beyond recency — the
-  injury fallback (`loading.latest_healthy_row`) caps how far back it will
-  reach (`MAX_SEASONS_BACK = 1` in `rank.py`) specifically to avoid
-  resurrecting long-retired players. The Explore button is the manual
-  workaround.
+- **Injury data is ESPN's, and only current injuries.** Games missed come
+  from ESPN's estimated return date, which is often a placeholder a few
+  days out. The feed can't tell "injured all last season" apart from
+  "retired", so the injury fallback (`loading.latest_healthy_row`) still
+  caps how far back it will reach (`MAX_SEASONS_BACK = 1` in `rank.py`)
+  to avoid resurrecting long-retired players. The Explore button is the
+  manual workaround.
 
 ## Repo layout
 
@@ -200,6 +204,7 @@ src/
   nhl_projections.py Parses NHL.com's projections, name-matches them to the board
   notable.py         Fragile/declining/rising/rookie "Notes" tags (local data only)
   nhl_api.py         Live NHL API rosters (team-change / no-team tags, team names)
+  espn_injuries.py   Live ESPN injury feed: injury tags + games-missed point adjustment
   draft_pool.py      Live undrafted-only VORP boards; goalie and team pools
   draft_state.py     Per-season picks/managers/settings/keepers persistence, snake order
   explore.py         Mistral web-search player lookup for the Explore button

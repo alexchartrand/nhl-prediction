@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import espn_injuries
 import loading
 import nhl_api
 import nhl_projections
@@ -91,7 +92,8 @@ def goalie_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON)
     off NHL.com's projected win totals (see nhl_projections.py) rather than
     the in-repo model -- those projections bake in this season's
     starter/backup depth chart, which the historical-stats model has no way
-    to see (see CLAUDE.md). Wins are converted to fantasy points
+    to see (see CLAUDE.md). Points are scaled down for games a goalie is
+    expected to miss per ESPN's live injury list (espn_injuries.py). Wins are converted to fantasy points
     (``predicted_points``) with each goalie's shrunk points-per-win ratio
     (goalie_points_per_win), so goalie VORP is on the same scale as skater
     VORP.
@@ -115,16 +117,18 @@ def goalie_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON)
     ppw, league_ppw = goalie_points_per_win(goalie_df, as_of_season)
     pool["pts_per_win"] = pool["player_id"].map(ppw).fillna(league_ppw).round(2)
     pool["predicted_points"] = (pool["projected_wins"] * pool["pts_per_win"]).round(1)
+    pool, _ = espn_injuries.apply_live_injuries(pool)
 
     team_map, complete = nhl_api.current_team_map()
     pool = nhl_api.apply_live_team(pool, team_map)
     no_team = nhl_api.detect_no_team(pool, team_map) if (team_map and complete) else pd.Series(False, index=pool.index)
     pool["Notes"] = [
-        " • ".join(tag for tag, on in (("Injured", inj), ("No Team", nt)) if on)
-        for inj, nt in zip(pool["injured"], no_team)
+        " • ".join(tag for tag in (inj, "No Team" if nt else None) if tag)
+        for inj, nt in zip(pool["injury_tag"], no_team)
     ]
     return pool[
-        ["player_id", "Player", "Team", "pos_group", "GP", "projected_wins", "pts_per_win", "predicted_points", "Notes"]
+        ["player_id", "Player", "Team", "pos_group", "GP", "projected_wins", "pts_per_win", "predicted_points",
+         "games_missed", "Notes", "injury"]
     ].reset_index(drop=True)
 
 
@@ -160,7 +164,7 @@ def team_pool(goalie_df: pd.DataFrame, as_of_season: str = rank.LATEST_SEASON) -
     pool["Team"] = pool["Code"].map(name_by_code).fillna(pool["Code"])
     pool["player_id"] = pool["Code"]
     pool["pos_group"] = "TEAM"
-    games_per_team = 2 * pool["projected_wins"].sum() / len(pool)
+    games_per_team = nhl_projections.games_per_team()
     pool["projected_otl"] = round(league_otl_per_team_game(goalie_df, as_of_season) * games_per_team, 1)
     pool["predicted_points"] = (
         scoring.TEAM_WEIGHTS["W"] * pool["projected_wins"] + scoring.TEAM_WEIGHTS["OTL"] * pool["projected_otl"]

@@ -62,6 +62,7 @@ def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
     path.parent.mkdir(exist_ok=True)
     board.to_csv(path, index=False)
     st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
+    st.session_state["injury_feed_ok"] = board.attrs.get("injury_feed_ok", True)
     return board
 
 
@@ -86,9 +87,9 @@ def get_board(season: str, settings: dict) -> pd.DataFrame:
     path = board_path(season)
     if path.exists():
         board = pd.read_csv(path)
-        # Boards saved before the NHL.com projection column existed get
-        # rebuilt once so it (and the NHL.com-only rookies) show up.
-        if "nhl_projection" in board.columns:
+        # Boards saved before the NHL.com projection / ESPN injury columns
+        # existed get rebuilt once so they (and the NHL.com-only rookies) show up.
+        if {"nhl_projection", "injury"} <= set(board.columns):
             return board
     return _rebuild_board(season, settings)
 
@@ -108,8 +109,9 @@ def get_goalies(season: str) -> pd.DataFrame:
     path = goalie_board_path(season)
     if path.exists():
         pool = pd.read_csv(path)
-        # Saved before goalies were converted from wins to fantasy points.
-        if "pts_per_win" in pool.columns:
+        # Saved before goalies were converted from wins to fantasy points,
+        # or before the ESPN injury columns.
+        if {"pts_per_win", "injury"} <= set(pool.columns):
             return pool
     return _rebuild_goalies(season)
 
@@ -489,7 +491,7 @@ def forwards_defense_tab(
         filtered = filtered[filtered["pos_group"] == pos_filter]
     if len(name_query) >= 2:
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
-    filtered = filtered.rename(columns={"nhl_projection": "NHL.com Projection"}).reset_index(drop=True)
+    filtered = filtered.rename(columns={"nhl_projection": "NHL.com Projection", "injury": "Injury"}).reset_index(drop=True)
 
     rows = [r for r in selection_rows("fd_table") if r < len(filtered)]
     selected = filtered.iloc[rows]
@@ -512,7 +514,9 @@ def forwards_defense_tab(
 
     uncheck_all_button("fd_table", disabled=selected.empty)
 
-    display_cols = ["Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP"]
+    display_cols = [
+        "Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
+    ]
     st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
 
@@ -564,9 +568,14 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
     uncheck_all_button("g_table", disabled=selected.empty)
 
     goalies = goalies.rename(
-        columns={"projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points"}
+        columns={
+            "projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points",
+            "injury": "Injury",
+        }
     )
-    display_cols = ["Player", "Team", "GP", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes"]
+    display_cols = [
+        "Player", "Team", "GP", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
+    ]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
@@ -737,6 +746,8 @@ def main() -> None:
             "Live NHL roster check was rate-limited or cut short -- some "
             "'New Team' tags may be missing. Recompute again in a bit."
         )
+    if st.session_state.get("injury_feed_ok") is False:
+        st.sidebar.warning("ESPN injury feed couldn't be reached -- no injury tags or adjustments. Recompute again in a bit.")
 
     picks = draft_state.load_picks(season)
     if not picks.empty:

@@ -9,7 +9,8 @@ shown alongside as a reference column, and stand in as ``predicted_points``
 only for players the model can't rank (rookies with no usable history).
 
 Each numbered goalie line is "Name, POS, TEAM: wins", sometimes with an
-"(INJ.)" tag or a committee of two goalies sharing one line ("Alex Lyon or
+"(INJ.)" tag (stripped and ignored -- it's a static snapshot; live injury
+status comes from espn_injuries.py) or a committee of two goalies sharing one line ("Alex Lyon or
 Colten Ellis, G, BUF: 18") -- that expands to one row per goalie, sharing the
 line's projected win total and whichever team appears on either name. The
 number is NHL.com's projected win count, not a fantasy point projection.
@@ -52,14 +53,13 @@ def _parse_name_segment(segment: str) -> tuple[str, str | None]:
 
 def _parse_goalie_line(line: str) -> list[dict]:
     name_part, _, wins_part = line.rpartition(":")
-    injured = bool(_INJ.search(name_part))
     name_part = _INJ.sub("", name_part).strip()
     wins = int(wins_part.strip())
 
     parsed = [_parse_name_segment(s) for s in name_part.split(" or ")]
     team = next((t for _, t in parsed if t), None)
     return [
-        {"Player": name, "Team": team, "projected_wins": wins, "injured": injured}
+        {"Player": name, "Team": team, "projected_wins": wins}
         for name, _ in parsed
         if name
     ]
@@ -75,7 +75,7 @@ def load_goalie_projections(path: Path = GOALIES_FILE) -> pd.DataFrame:
         if not line or ":" not in line:
             continue
         rows.extend(_parse_goalie_line(line))
-    df = pd.DataFrame(rows, columns=["Player", "Team", "projected_wins", "injured"])
+    df = pd.DataFrame(rows, columns=["Player", "Team", "projected_wins"])
     return df.sort_values("projected_wins", ascending=False).reset_index(drop=True)
 
 
@@ -168,3 +168,11 @@ def load_team_projections(path: Path = TEAMS_FILE) -> pd.DataFrame:
         rows.append({"Code": code, "projected_wins": int(wins), "win_delta": win_delta})
     df = pd.DataFrame(rows, columns=["Code", "projected_wins", "win_delta"])
     return df.sort_values("projected_wins", ascending=False).reset_index(drop=True)
+
+
+def games_per_team(path: Path = TEAMS_FILE) -> float:
+    """Regular-season length implied by the team projections: every game has
+    one winner, so games per team = 2 x total projected wins / teams (84 for
+    2026-27)."""
+    teams = load_team_projections(path)
+    return 2 * teams["projected_wins"].sum() / len(teams)

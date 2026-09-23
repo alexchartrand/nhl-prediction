@@ -5,8 +5,9 @@ games-played shortfall pattern -- a proxy for injury-proneness, since the
 dataset has no injury log) and ``trend`` (a fantasy-point-rate move sharp
 enough, combined with age, to read as decline or a breakout). A third signal,
 whether a player changed teams this offseason, needs live data and lives in
-``nhl_api.py`` -- ``combine_notes`` is where all three come together into the
-board's single "Notes" string.
+``nhl_api.py``, and live injury status in ``espn_injuries.py`` --
+``combine_notes`` is where they all come together into the board's single
+"Notes" string.
 """
 
 from __future__ import annotations
@@ -125,7 +126,12 @@ def is_rookie(player_ids: pd.Series, ages: pd.Series, df_all: pd.DataFrame, as_o
 
 
 def combine_notes(
-    fragile: bool, trend: str | None, team_change: bool | None, no_team: bool = False, rookie: bool = False
+    fragile: bool,
+    trend: str | None,
+    team_change: bool | None,
+    no_team: bool = False,
+    rookie: bool = False,
+    injury: str | None = None,
 ) -> str:
     """Single source of truth for the 'Notes' string's wording and order.
 
@@ -136,8 +142,13 @@ def combine_notes(
 
     no_team=True means the live rosters were fully fetched and the player is on
     none of them (retired or unsigned).
+
+    injury is espn_injuries' short tag ("Injured ~13 GP", "Day-to-day", ...)
+    and leads the string, being the most urgent thing to know on draft day.
     """
     tags = []
+    if isinstance(injury, str) and injury:
+        tags.append(injury)
     if rookie:
         tags.append("Rookie")
     if no_team:

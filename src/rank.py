@@ -26,6 +26,11 @@ with NHL.com's fantasy-point projection standing in as ``predicted_points``
 modeled players -- two different projection sources in one ranking. Every
 player also carries ``nhl_projection`` for side-by-side reference.
 
+Players on ESPN's live injury/suspension list (espn_injuries.py) have
+``predicted_points`` scaled down by the share of the season they're expected
+to miss before VORP is computed; the unadjusted number is kept as
+``healthy_points``.
+
 F/D only -- goalies and teams are ranked separately off NHL.com's
 projections (see draft_pool.goalie_pool / team_pool).
 """
@@ -38,6 +43,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import espn_injuries
 import loading
 import nhl_api
 import nhl_projections
@@ -145,11 +151,13 @@ def build_draft_board(
     teams: int,
     roster: dict,
     fetch_live_team_changes: bool = True,
+    fetch_live_injuries: bool = True,
 ) -> pd.DataFrame:
     """``fetch_live_team_changes=False`` skips the live NHL API roster check
-    (see nhl_api.py) for a fully deterministic, network-free board -- used
-    by tests. Live data only ever adds the 'New Team' note; a failed or
-    skipped fetch degrades to no team-change tags, nothing else changes.
+    (see nhl_api.py) and ``fetch_live_injuries=False`` the ESPN injury feed
+    (espn_injuries.py), for a fully deterministic, network-free board. A
+    failed or skipped fetch degrades to no team-change / injury tags (and no
+    injury point adjustment), nothing else changes.
 
     ``teams``/``roster`` set the pool size and F/D roster slots that drive
     the VORP replacement level (see add_vorp) -- callers with a
@@ -160,6 +168,10 @@ def build_draft_board(
     )
     models = fit_production_models(pairs, df_all)
     predicted = add_projection_only_players(predict_upcoming(models, df_all), df_all)
+    if fetch_live_injuries:
+        predicted, injury_feed_ok = espn_injuries.apply_live_injuries(predicted)
+    else:
+        predicted, injury_feed_ok = espn_injuries.apply_injuries(predicted, None, None, 0.0), True
     ranked = add_vorp(predicted, teams=teams, roster=roster)
     ranked = notable.add_notable_flags(ranked, df_all, LATEST_SEASON)
 
@@ -179,22 +191,24 @@ def build_draft_board(
         ranked["no_team"] = False
     ranked["rookie"] = notable.is_rookie(ranked[loading.ID_COL], ranked["Age"], df_all, LATEST_SEASON)
     ranked["Notes"] = [
-        notable.combine_notes(f, t, c, n, r)
-        for f, t, c, n, r in zip(
-            ranked["fragile"], ranked["trend"], ranked["team_change"], ranked["no_team"], ranked["rookie"]
+        notable.combine_notes(f, t, c, n, r, i)
+        for f, t, c, n, r, i in zip(
+            ranked["fragile"], ranked["trend"], ranked["team_change"], ranked["no_team"], ranked["rookie"],
+            ranked["injury_tag"],
         )
     ]
 
     cols = [
         loading.ID_COL, "Player", "Team", "Pos", "pos_group", "Age", "GP",
         "feature_season", "seasons_back",
-        "predicted_points", "nhl_projection", "source", "pos_rank", "VORP",
-        "fragile", "trend", "team_change", "rookie", "Notes",
+        "predicted_points", "healthy_points", "games_missed", "nhl_projection", "source", "pos_rank", "VORP",
+        "fragile", "trend", "team_change", "rookie", "Notes", "injury",
     ]
     result = ranked.sort_values("VORP", ascending=False)[cols].reset_index(drop=True)
     # Not persisted to the CSV -- read by app.py right after a rebuild, in
     # the same process, to warn if the live team-change check was cut short.
     result.attrs["team_fetch_complete"] = team_fetch_complete
+    result.attrs["injury_feed_ok"] = injury_feed_ok
     return result
 
 

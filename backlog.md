@@ -46,7 +46,14 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
   separately. If they disagree, replacement levels are wrong. Set the manager count from the
   length of the draft-order list, or at least warn on a mismatch.
 
-### 2. Live injury feed (ESPN) — S
+### 2. Live injury feed (ESPN) — ✅ DONE (2026-09-23)
+- **Built:** `src/espn_injuries.py`. Games missed come from ESPN's structured `returnDate`
+  (no comment parsing needed) vs. the regular-season dates from the NHL schedule endpoint;
+  points are scaled by the share of the season missed before VORP, for F/D and goalies.
+  Notes tag + "Injury" detail column in the app. On 2026-09-23: 56 F/D + 4 G tagged; Terry
+  62 → 45 pts (~23 GP), Marchand 58 → 48 (~15 GP), Gustavsson ~14 GP.
+- NHL.com's `(INJ.)` marker is **not** used (static snapshot) -- decided against it.
+- Not done: the "FA replacement minus one swap" floor for long injuries, manual override.
 - `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries` -- unauthenticated JSON,
   confirmed live (77 injured listed on 2026-09-23, preseason 2026-27). Has status
   (Out / IR / Day-to-day / Suspension) and a text comment with timelines.
