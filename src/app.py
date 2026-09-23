@@ -39,6 +39,23 @@ HISTORY_COLS = ["season", "Team", "Pos", "GP", "G", "A", "PTS", "SOG", "PPG", "P
 
 st.set_page_config(page_title="Draft Assistant", layout="wide")
 
+# Keeps each tab's "Drafted by" panel (pick_panel_columns) in view while the
+# page scrolls past the table beside it. Sticky goes on the wrapper Streamlit
+# puts around the keyed container -- that wrapper is exactly the panel's own
+# height, while its parent stretches to the table's, which is the room the
+# panel needs to stick in. If Streamlit's DOM changes, the panel just scrolls.
+st.html(
+    """
+    <style>
+    div[data-testid="stLayoutWrapper"]:has(> div[class*="st-key-"][class*="_pick_panel"]) {
+        position: sticky;
+        top: 4rem;
+        z-index: 1;
+    }
+    </style>
+    """
+)
+
 
 def board_path(season: str) -> Path:
     """Each season's board is persisted separately -- its VORP/pos_rank
@@ -394,6 +411,15 @@ def pick_form(
             st.rerun()
 
 
+def pick_panel_columns(key_prefix: str):
+    """Splits the tab into the table column and a narrow side panel for the
+    pick form, so drafting a player checked far down the table doesn't mean
+    scrolling back up to the form. The panel's keyed container is what the
+    sticky CSS at the top of this file hooks onto."""
+    table_col, side_col = st.columns([4, 1])
+    return table_col, side_col.container(key=f"{key_prefix}_pick_panel")
+
+
 def render_selectable_table(df: pd.DataFrame, display_cols: list[str], key: str, selection_mode: str = "single-row"):
     """Renders df[display_cols] with row selection (checkboxes appear in the
     row selector column when selection_mode is "multi-row"). Returns the
@@ -502,26 +528,28 @@ def forwards_defense_tab(
         st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
         selected = selected.iloc[:3]
 
-    if len(selected) == 1:
-        row = selected.iloc[0]
-        pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd", settings=settings)
-    else:
-        pick_form(season, None, None, None, options, labels, key_prefix="fd", settings=settings)
-    st.divider()
+    table_col, panel = pick_panel_columns("fd")
+    with panel:
+        if len(selected) == 1:
+            row = selected.iloc[0]
+            pick_form(season, row["player_id"], row["Player"], row["pos_group"], options, labels, key_prefix="fd", settings=settings)
+        else:
+            pick_form(season, None, None, None, options, labels, key_prefix="fd", settings=settings)
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
-    with col2:
-        live_search_input("Search player name", key="fd_name_query")
+    with table_col:
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
+        with col2:
+            live_search_input("Search player name", key="fd_name_query")
 
-    uncheck_all_button("fd_table", disabled=selected.empty)
+        uncheck_all_button("fd_table", disabled=selected.empty)
 
-    display_cols = [
-        "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
-    ]
-    st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
-    render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
+        display_cols = [
+            "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
+        ]
+        st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
+        render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
 
     if not selected.empty:
         st.divider()
@@ -559,28 +587,30 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
         st.warning("Up to 3 players can be compared at once -- showing the first 3 checked.")
         selected = selected.iloc[:3]
 
-    if len(selected) == 1:
-        row = selected.iloc[0]
-        pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g", settings=settings)
-    else:
-        pick_form(season, None, None, None, options, labels, key_prefix="g", settings=settings)
-    st.divider()
+    table_col, panel = pick_panel_columns("g")
+    with panel:
+        if len(selected) == 1:
+            row = selected.iloc[0]
+            pick_form(season, row["player_id"], row["Player"], "G", options, labels, key_prefix="g", settings=settings)
+        else:
+            pick_form(season, None, None, None, options, labels, key_prefix="g", settings=settings)
 
-    live_search_input("Search goalie name", key="g_name_query")
+    with table_col:
+        live_search_input("Search goalie name", key="g_name_query")
 
-    uncheck_all_button("g_table", disabled=selected.empty)
+        uncheck_all_button("g_table", disabled=selected.empty)
 
-    goalies = goalies.rename(
-        columns={
-            "projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points",
-            "injury": "Injury",
-        }
-    )
-    display_cols = [
-        "Player", "Team", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
-    ]
-    st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
-    render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
+        goalies = goalies.rename(
+            columns={
+                "projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points",
+                "injury": "Injury",
+            }
+        )
+        display_cols = [
+            "Player", "Team", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
+        ]
+        st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
+        render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
     if not selected.empty:
         st.divider()
@@ -611,30 +641,32 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
     rows = [r for r in selection_rows("team_table") if r < len(teams)]
     selected = teams.iloc[rows[0]] if rows else None
 
-    if selected is not None:
-        pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team", settings=settings)
-    else:
-        pick_form(season, None, None, None, options, labels, key_prefix="team", settings=settings)
-    st.divider()
+    table_col, panel = pick_panel_columns("team")
+    with panel:
+        if selected is not None:
+            pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team", settings=settings)
+        else:
+            pick_form(season, None, None, None, options, labels, key_prefix="team", settings=settings)
 
-    live_search_input("Search team name", key="team_name_query")
+    with table_col:
+        live_search_input("Search team name", key="team_name_query")
 
-    uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
+        uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
 
-    teams = teams.rename(
-        columns={
-            "projected_wins": "Projected Wins",
-            "win_delta": "Win Δ",
-            "projected_otl": "Projected OTL",
-            "predicted_points": "Projected Points",
-        }
-    )
-    display_cols = ["Team", "Code", "Projected Wins", "Win Δ", "Projected OTL", "Projected Points", "pos_rank", "VORP"]
-    st.caption(
-        f"{len(teams)} available teams shown, ranked by projected standings points "
-        "(2 x NHL.com's projected wins + league-average OT/SO losses)"
-    )
-    render_selectable_table(teams, display_cols, key=table_key("team_table"))
+        teams = teams.rename(
+            columns={
+                "projected_wins": "Projected Wins",
+                "win_delta": "Win Δ",
+                "projected_otl": "Projected OTL",
+                "predicted_points": "Projected Points",
+            }
+        )
+        display_cols = ["Team", "Code", "Projected Wins", "Win Δ", "Projected OTL", "Projected Points", "pos_rank", "VORP"]
+        st.caption(
+            f"{len(teams)} available teams shown, ranked by projected standings points "
+            "(2 x NHL.com's projected wins + league-average OT/SO losses)"
+        )
+        render_selectable_table(teams, display_cols, key=table_key("team_table"))
 
     with st.expander("Show drafted teams"):
         picks = draft_state.load_picks(season)
