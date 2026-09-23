@@ -39,6 +39,13 @@ GOALIE_WEIGHTS = {
     "A": 2.0,
 }
 
+# The pool's "1 team" slot scores NHL standings points: 2 per win, 1 per
+# OT/SO loss.
+TEAM_WEIGHTS = {
+    "W": 2.0,
+    "OTL": 1.0,
+}
+
 
 def skater_points(df: pd.DataFrame) -> pd.Series:
     """Fantasy points for each skater row."""

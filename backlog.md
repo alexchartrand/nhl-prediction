@@ -25,7 +25,14 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
 
 ## Before the draft
 
-### 1. Goalies and teams on the fantasy-point scale + manager count from the draft order — S
+### 1. Goalies and teams on the fantasy-point scale + manager count from the draft order — ✅ DONE (2026-09-23)
+- **Built:** goalies = projected wins × points-per-win (own last-3-season ratio shrunk toward
+  the league's 2.51 with an 80-win prior; ratios end up 2.41–2.63). Teams = 2 × W + league-average
+  OTL (0.11 per team-game × 84 games = 9.4, same for every team, so it doesn't change VORP).
+  At 12 teams: Vasilevskiy 95.6 pts / VORP 19 (was 8), Colorado 115 pts / VORP 18 (was 9);
+  the best goalie/team now rank ~60th/65th overall by VORP. Manager count = draft-order length
+  whenever an order is set (`draft_state.load_settings`); the settings input is locked then.
+  Betting-market team totals not done (optional).
 - **Problem:** goalie/team VORP is in *wins*, skater VORP in *fantasy points*, so goalies and
   teams look far less valuable than they are and get drafted too late.
 - **Goalies:** 2 W + 1 OTL + 2 SO. From 2022-23+ goalies with 40+ GP: OTL/W = 0.21,

@@ -1,33 +1,33 @@
-Code,projected_wins,win_delta,Team,player_id,pos_group,predicted_points
-ANA,42,-1,Anaheim Ducks,ANA,TEAM,42
-BOS,43,-2,Boston Bruins,BOS,TEAM,43
-BUF,46,-4,Buffalo Sabres,BUF,TEAM,46
-CGY,31,-3,Calgary Flames,CGY,TEAM,31
-CAR,52,-1,Carolina Hurricanes,CAR,TEAM,52
-CHI,32,3,Chicago Blackhawks,CHI,TEAM,32
-COL,53,-2,Colorado Avalanche,COL,TEAM,53
-CBJ,38,-2,Columbus Blue Jackets,CBJ,TEAM,38
-DAL,49,-1,Dallas Stars,DAL,TEAM,49
-DET,40,-1,Detroit Red Wings,DET,TEAM,40
-EDM,43,2,Edmonton Oilers,EDM,TEAM,43
-FLA,50,10,Florida Panthers,FLA,TEAM,50
-LAK,37,2,Los Angeles Kings,LAK,TEAM,37
-MIN,46,0,Minnesota Wild,MIN,TEAM,46
-MTL,47,-1,Montréal Canadiens,MTL,TEAM,47
-NSH,38,0,Nashville Predators,NSH,TEAM,38
-NJD,44,2,New Jersey Devils,NJD,TEAM,44
-NYI,40,-3,New York Islanders,NYI,TEAM,40
-NYR,40,6,New York Rangers,NYR,TEAM,40
-OTT,43,-1,Ottawa Senators,OTT,TEAM,43
-PHI,44,1,Philadelphia Flyers,PHI,TEAM,44
-PIT,40,-1,Pittsburgh Penguins,PIT,TEAM,40
-SJS,42,3,San Jose Sharks,SJS,TEAM,42
-SEA,30,-4,Seattle Kraken,SEA,TEAM,30
-STL,41,4,St. Louis Blues,STL,TEAM,41
-TBL,47,-3,Tampa Bay Lightning,TBL,TEAM,47
-TOR,44,12,Toronto Maple Leafs,TOR,TEAM,44
-UTA,44,1,Utah Mammoth,UTA,TEAM,44
-VAN,25,0,Vancouver Canucks,VAN,TEAM,25
-VGK,45,6,Vegas Golden Knights,VGK,TEAM,45
-WSH,50,7,Washington Capitals,WSH,TEAM,50
-WPG,38,3,Winnipeg Jets,WPG,TEAM,38
+Code,projected_wins,win_delta,Team,player_id,pos_group,projected_otl,predicted_points
+ANA,42,-1,Anaheim Ducks,ANA,TEAM,9.4,93.4
+BOS,43,-2,Boston Bruins,BOS,TEAM,9.4,95.4
+BUF,46,-4,Buffalo Sabres,BUF,TEAM,9.4,101.4
+CGY,31,-3,Calgary Flames,CGY,TEAM,9.4,71.4
+CAR,52,-1,Carolina Hurricanes,CAR,TEAM,9.4,113.4
+CHI,32,3,Chicago Blackhawks,CHI,TEAM,9.4,73.4
+COL,53,-2,Colorado Avalanche,COL,TEAM,9.4,115.4
+CBJ,38,-2,Columbus Blue Jackets,CBJ,TEAM,9.4,85.4
+DAL,49,-1,Dallas Stars,DAL,TEAM,9.4,107.4
+DET,40,-1,Detroit Red Wings,DET,TEAM,9.4,89.4
+EDM,43,2,Edmonton Oilers,EDM,TEAM,9.4,95.4
+FLA,50,10,Florida Panthers,FLA,TEAM,9.4,109.4
+LAK,37,2,Los Angeles Kings,LAK,TEAM,9.4,83.4
+MIN,46,0,Minnesota Wild,MIN,TEAM,9.4,101.4
+MTL,47,-1,Montréal Canadiens,MTL,TEAM,9.4,103.4
+NSH,38,0,Nashville Predators,NSH,TEAM,9.4,85.4
+NJD,44,2,New Jersey Devils,NJD,TEAM,9.4,97.4
+NYI,40,-3,New York Islanders,NYI,TEAM,9.4,89.4
+NYR,40,6,New York Rangers,NYR,TEAM,9.4,89.4
+OTT,43,-1,Ottawa Senators,OTT,TEAM,9.4,95.4
+PHI,44,1,Philadelphia Flyers,PHI,TEAM,9.4,97.4
+PIT,40,-1,Pittsburgh Penguins,PIT,TEAM,9.4,89.4
+SJS,42,3,San Jose Sharks,SJS,TEAM,9.4,93.4
+SEA,30,-4,Seattle Kraken,SEA,TEAM,9.4,69.4
+STL,41,4,St. Louis Blues,STL,TEAM,9.4,91.4
+TBL,47,-3,Tampa Bay Lightning,TBL,TEAM,9.4,103.4
+TOR,44,12,Toronto Maple Leafs,TOR,TEAM,9.4,97.4
+UTA,44,1,Utah Mammoth,UTA,TEAM,9.4,97.4
+VAN,25,0,Vancouver Canucks,VAN,TEAM,9.4,59.4
+VGK,45,6,Vegas Golden Knights,VGK,TEAM,9.4,99.4
+WSH,50,7,Washington Capitals,WSH,TEAM,9.4,109.4
+WPG,38,3,Winnipeg Jets,WPG,TEAM,9.4,85.4

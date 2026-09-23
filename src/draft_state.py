@@ -324,13 +324,19 @@ def save_managers(
 def load_settings(season: str) -> dict:
     """League shape for this season (pool size + roster slots), falling
     back to DEFAULT_SETTINGS for any key not yet saved (e.g. a season
-    created before a new setting existed)."""
+    created before a new setting existed). Once a draft order is set, its
+    length *is* the manager count -- a stale saved ``num_managers`` would
+    put every VORP replacement level at the wrong depth."""
     path = _settings_path(season)
     saved = {}
     if path.exists():
         with open(path, encoding="utf-8") as f:
             saved = json.load(f)
-    return {**DEFAULT_SETTINGS, **saved}
+    settings = {**DEFAULT_SETTINGS, **saved}
+    order = load_draft_order(season)
+    if order:
+        settings["num_managers"] = len(order)
+    return settings
 
 
 def save_settings(season: str, settings: dict) -> None:

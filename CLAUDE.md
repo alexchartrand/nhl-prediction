@@ -176,6 +176,17 @@ see Status below.
       (`nhl_projections.match_projection_rows`: last name + first-name 3-letter prefix for
       Josh/Joshua, plus `_FIRST_NAME_ALIASES` for Tommy/Thomas), used only when unique on
       both sides so brothers (Ilya/Aliaksei Protas) never cross-match.
+- [x] Goalie/team VORP on the same scale as skaters (backlog #1). Before this, goalie/team
+      `predicted_points` were raw projected *wins*, so their VORP was ~2.5x too small next to
+      skater fantasy points. Goalies: wins x points-per-win (`draft_pool.goalie_points_per_win`:
+      last-3-season fantasy_points/W shrunk toward the league's 2.51 with an 80-win prior --
+      most individual spread is shutout/OTL luck). Teams: standings points
+      (`scoring.TEAM_WEIGHTS`) = 2 x W + league-average OTL (`league_otl_per_team_game` x games
+      per team, derived from the projections: 2 x total wins / teams = 84 for 2026-27). OTL is a
+      constant across teams, so it moves displayed points, not VORP. Saved goalie/team boards
+      without the new columns rebuild on load. Also: once a draft order is set, its length is
+      `num_managers` (`draft_state.load_settings`; settings input locked) -- a stale count put
+      every replacement level at the wrong depth.
 - [x] NHL.com-only rookies on the F/D board: `rank.add_projection_only_players` appends
       every NHL.com-projected F/D the model couldn't rank (no history, or only call-up games
       under `MIN_GP` -- McKenna, Martone, Stenberg, ... 10 players for 2026-27) with NHL.com's

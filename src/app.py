@@ -73,7 +73,7 @@ def _rebuild_goalies(season: str) -> pd.DataFrame:
 
 
 def _rebuild_teams(season: str) -> pd.DataFrame:
-    pool = draft_pool.team_pool()
+    pool = draft_pool.team_pool(get_goalie_seasons())
     path = team_board_path(season)
     path.parent.mkdir(exist_ok=True)
     pool.to_csv(path, index=False)
@@ -106,7 +106,10 @@ def get_goalie_seasons() -> pd.DataFrame:
 def get_goalies(season: str) -> pd.DataFrame:
     path = goalie_board_path(season)
     if path.exists():
-        return pd.read_csv(path)
+        pool = pd.read_csv(path)
+        # Saved before goalies were converted from wins to fantasy points.
+        if "pts_per_win" in pool.columns:
+            return pool
     return _rebuild_goalies(season)
 
 
@@ -114,7 +117,10 @@ def get_goalies(season: str) -> pd.DataFrame:
 def get_teams(season: str) -> pd.DataFrame:
     path = team_board_path(season)
     if path.exists():
-        return pd.read_csv(path)
+        pool = pd.read_csv(path)
+        # Saved before teams were converted from wins to standings points.
+        if "projected_otl" in pool.columns:
+            return pool
     return _rebuild_teams(season)
 
 
@@ -206,11 +212,20 @@ def settings_form(season: str, existing: dict) -> None:
     """League shape for this season: pool size (drives the VORP replacement
     level, see rank.add_vorp) and roster slots (drive both VORP and the "My
     Pool" progress tracker). Changing these doesn't retroactively rewrite an
-    already-computed board -- hit "Recompute draft board" afterwards."""
+    already-computed board -- hit "Recompute draft board" afterwards. Once a
+    draft order is set, the manager count comes from it (see
+    draft_state.load_settings) and can't be typed here."""
+    from_order = bool(draft_state.load_draft_order(season))
     with st.sidebar.expander("League settings", expanded=False):
         with st.form("settings_form"):
             num_managers = st.number_input(
-                "Number of managers", min_value=2, max_value=30, value=existing["num_managers"], step=1
+                "Number of managers",
+                min_value=2,
+                max_value=30,
+                value=existing["num_managers"],
+                step=1,
+                disabled=from_order,
+                help="Set by the draft order (Edit managers)." if from_order else None,
             )
             forwards = st.number_input(
                 "Forward roster slots", min_value=1, max_value=20, value=existing["forwards"], step=1
@@ -547,8 +562,10 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 
     uncheck_all_button("g_table", disabled=selected.empty)
 
-    goalies = goalies.rename(columns={"predicted_points": "Projected Wins"})
-    display_cols = ["Player", "Team", "GP", "Projected Wins", "pos_rank", "VORP", "Notes"]
+    goalies = goalies.rename(
+        columns={"projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points"}
+    )
+    display_cols = ["Player", "Team", "GP", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes"]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
 
@@ -591,8 +608,19 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
 
     uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
 
-    display_cols = ["Team", "Code", "projected_wins", "win_delta", "pos_rank", "VORP"]
-    st.caption(f"{len(teams)} available teams shown, ranked by NHL.com's projected win total")
+    teams = teams.rename(
+        columns={
+            "projected_wins": "Projected Wins",
+            "win_delta": "Win Δ",
+            "projected_otl": "Projected OTL",
+            "predicted_points": "Projected Points",
+        }
+    )
+    display_cols = ["Team", "Code", "Projected Wins", "Win Δ", "Projected OTL", "Projected Points", "pos_rank", "VORP"]
+    st.caption(
+        f"{len(teams)} available teams shown, ranked by projected standings points "
+        "(2 x NHL.com's projected wins + league-average OT/SO losses)"
+    )
     render_selectable_table(teams, display_cols, key=table_key("team_table"))
 
     with st.expander("Show drafted teams"):
