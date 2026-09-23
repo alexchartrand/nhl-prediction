@@ -68,7 +68,14 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
 - Same "never raise, degrade to no tag" convention as `nhl_api.py`. Matching by
   normalized name + position, as for the NHL API.
 
-### 3. Multi-season skater features — S (already prototyped)
+### 3. Multi-season skater features — ✅ DONE (2026-09-23)
+- **Built:** `features.add_multi_season_features`, in `FEATURE_COLS` for both F and D. Shipped
+  set = the list below minus Age² (ablation: no gain, and it would drift from Age when the injury
+  fallback bumps Age forward). Missing lags stay NaN (median-imputed); filling them with the
+  current season was slightly worse. Table below = shipped set (the Age² prototype was within ~0.1 MAE).
+- Board effect: players coming off one off-year move up (Matthews 62 → 74, Makar 69 → 78,
+  Point 52 → 60, Hedman 24 → 35), one-year spikes come down (Raddysh 64 → 52, Malkin 63 → 54).
+  Correlation with the old predictions 0.994, mean shift 0. Top-50 F/D mix about the same (17 D vs 18).
 - The skater model only sees one season (the goalie model already uses 2-season averages).
 - Added: last 2 prior seasons' pts/GP, GP share of season max, ATOI, a Marcel-style
   5/4/3 GP-weighted pts/GP, age², number of prior seasons.
@@ -76,9 +83,9 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
 
   | Holdout | F MAE | D MAE | Top-30 MAE |
   |---|---|---|---|
-  | 2023-24 | 11.39 → 10.93 | 8.43 → 7.99 | F 16.1 → 14.1, D 16.6 → 14.4 |
-  | 2024-25 | 10.37 → 10.24 | 6.89 → 6.84 | F 15.9 → 15.5, D 12.0 → 11.7 |
-  | 2025-26 | 10.05 → 9.88 | 7.61 → 7.32 | F 13.8 → 13.8, D 11.7 → 10.4 |
+  | 2023-24 | 11.39 → 10.91 | 8.43 → 7.98 | F 16.1 → 14.9, D 16.6 → 14.4 |
+  | 2024-25 | 10.37 → 10.31 | 6.89 → 6.83 | F 15.9 → 15.5, D 12.0 → 12.0 |
+  | 2025-26 | 10.05 → 9.87 | 7.61 → 7.31 | F 13.8 → 13.7, D 11.7 → 10.4 |
 
   MAE improved in 6 of 6 tests and Spearman in 5 of 6 (D 2024-25 is essentially flat). The biggest
   gains are on the top players (early rounds).

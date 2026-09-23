@@ -245,6 +245,14 @@ season's projections need a new folder and that constant bumped.
       tags, no adjustment, sidebar warning; schedule down -> tags but no adjustment.
       Not done: valuing a long-term injury as "free-agent replacement minus one swap" (the
       scaling alone already drops e.g. Troy Terry 62 -> 45), and a manual games-missed override.
+- [x] Multi-season skater features (backlog #3): `features.add_multi_season_features` adds
+      the two previous seasons' pts/GP, GP share of that season's league max, ATOI, a Marcel
+      5/4/3 GP-weighted pts/GP, current GP share, and prior-season count (capped at 3, NaN when
+      the data doesn't reach back far enough). Lags join by calendar year relative to the row's
+      own season, so injury-fallback rows keep a consistent history. Calibrated MAE improved in
+      all 6 rolling holdouts (target 2023-24/2024-25/2025-26 x F/D); 2025-26: F 10.05 -> 9.87,
+      D 7.61 -> 7.31. `marcel_pts_pg` is now the top ElasticNet coefficient for both groups. Tried
+      and dropped: Age² (no gain), filling missing lags with the current season.
 - [x] Keepers (K1 in `backlog.md`): a manager's last pick is his keeper, kept into the next
       season as his **last-round pick** (he skips the final round); skaters only, one per manager,
       no season limit. Entered before the draft in the sidebar "Keepers from last season" box,

@@ -53,8 +53,9 @@ data/nhl 2026-2027 projections/*.txt → nhl_projections.py (goalie/team ranking
    `GOALIE_WEIGHTS`, `TEAM_WEIGHTS`).
 4. **Features** (`src/features.py`) — per-game rate stats (not raw totals,
    so a shortened season isn't penalized) plus age, GP, and prior-season
-   fantasy points/game. `FEATURE_COLS` is the single list every skater
-   model trains on.
+   fantasy points/game, and the two seasons before that (lagged points/game,
+   GP share, ATOI, a Marcel-style 5/4/3 weighted points rate).
+   `FEATURE_COLS` is the single list every skater model trains on.
 5. **Modeling** (`src/train.py`) — separate ElasticNet and LightGBM models
    per position group (forwards, defense), grouped k-fold CV, most recent
    season held out for evaluation. ElasticNet wins on holdout Spearman for
@@ -197,7 +198,7 @@ run_app.bat      Launches the Streamlit app
 src/
   loading.py         CSV parsing, player-ID join key, training-pair construction, injury fallback
   scoring.py         Skater / goalie / team scoring rules
-  features.py        Feature list + prior-season rate features
+  features.py        Feature list + prior-season and multi-season features
   train.py           Skater model training + holdout evaluation (ElasticNet vs LightGBM) + calibration
   goalies.py         Goalie data/features + goalie model evaluation
   rank.py            Production F/D model refit + VORP draft board generation
