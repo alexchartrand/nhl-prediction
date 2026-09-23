@@ -8,8 +8,9 @@ Lets the user browse the ranked F/D draft board and the goalie/team boards
 position/name, mark players (or a team) as drafted (by themselves or another
 manager) with VORP recomputed on who's left, undo a pick, and look up any player's season history. "My Pool" shows the user's
 own roster against the season's roster-slot targets, projected standings for
-every manager, and what waiting a round costs at each position still needed
-(standings.py). All draft state
+every manager, what waiting a round costs at each position still needed
+(standings.py), and the best keeper candidates for your final pick
+(keeper.py). All draft state
 (picks, managers, settings, keepers) persists per season under
 ``state/seasons/<season>/`` so it survives an app restart mid-draft.
 """
@@ -28,6 +29,7 @@ import draft_state
 import explore
 import features
 import goalies as goalies_module
+import keeper
 import rank
 import standings
 
@@ -107,9 +109,9 @@ def get_board(season: str, settings: dict) -> pd.DataFrame:
     path = board_path(season)
     if path.exists():
         board = pd.read_csv(path)
-        # Boards saved before the NHL.com projection / ESPN injury columns
-        # existed get rebuilt once so they (and the NHL.com-only rookies) show up.
-        if {"nhl_projection", "injury"} <= set(board.columns):
+        # Boards saved before the NHL.com projection / ESPN injury / keeper
+        # columns existed get rebuilt once so they (and the NHL.com-only rookies) show up.
+        if {"nhl_projection", "injury", "future_value"} <= set(board.columns):
             return board
     return _rebuild_board(season, settings)
 
@@ -382,6 +384,13 @@ def pick_form(
     active = draft_state.active_manager(season)
     index = options.index(active) if active in options else 0
     n_picks = len(draft_state.load_picks(season))
+    if enabled and active == "me":
+        status = keeper.roster_status(draft_state.roster_picks(season), draft_state.load_keepers(season), settings)
+        if keeper.blocks_keeper(status, pos_group):
+            st.warning(
+                "This fills your last F/D slot while you still need a goalie/team -- your final pick would "
+                "then be a goalie/team, so no keeper. Fine if that's the plan; otherwise draft the goalie/team first."
+            )
     with st.form(f"{key_prefix}_pick_form"):
         manager = st.selectbox(
             "Drafted by",
@@ -512,15 +521,28 @@ def forwards_defense_tab(
     available = draft_pool.undrafted_board(
         board, drafted, teams=settings["num_managers"], roster={"F": settings["forwards"], "D": settings["defense"]}
     )
+    available["keeper_value"] = keeper.keeper_value(available).round(1)
+
+    # Your final pick is your keeper, so the table defaults to keeper value
+    # then. The key includes that flag so the default flips when it changes,
+    # while a manual choice sticks until then.
+    status = keeper.roster_status(draft_state.roster_picks(season), draft_state.load_keepers(season), settings)
+    sort_key = f"fd_sort_{status['final_pick']}"
+    sort_options = ["VORP", "Keeper Value"]
+    sort_by = st.session_state.get(sort_key, sort_options[int(status["final_pick"])])
 
     pos_filter = st.session_state.get("fd_pos_filter", "All")
     name_query = st.session_state.get("fd_name_query", "")
     filtered = available
+    if sort_by == "Keeper Value":
+        filtered = filtered.sort_values("keeper_value", ascending=False)
     if pos_filter != "All":
         filtered = filtered[filtered["pos_group"] == pos_filter]
     if len(name_query) >= 2:
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
-    filtered = filtered.rename(columns={"nhl_projection": "NHL.com Projection", "injury": "Injury"}).reset_index(drop=True)
+    filtered = filtered.rename(
+        columns={"nhl_projection": "NHL.com Projection", "injury": "Injury", "keeper_value": "Keeper Value"}
+    ).reset_index(drop=True)
 
     rows = [r for r in selection_rows("fd_table") if r < len(filtered)]
     selected = filtered.iloc[rows]
@@ -537,16 +559,29 @@ def forwards_defense_tab(
             pick_form(season, None, None, None, options, labels, key_prefix="fd", settings=settings)
 
     with table_col:
-        col1, col2 = st.columns([1, 2])
+        if status["final_pick"]:
+            st.info(
+                "Your next pick is your last -- the skater you take **becomes your keeper**, so the table is sorted "
+                "by Keeper Value (this season's VORP + value over the next seasons; details in My Pool)."
+            )
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
             st.selectbox("Position", ["All", "F", "D"], key="fd_pos_filter")
         with col2:
             live_search_input("Search player name", key="fd_name_query")
+        with col3:
+            # Re-sorting moves rows under the checked boxes, so clear them.
+            st.radio(
+                "Sort by", sort_options, index=sort_options.index(sort_by), key=sort_key, horizontal=True,
+                on_change=lambda: st.session_state.update(fd_table_version=st.session_state.get("fd_table_version", 0) + 1),
+                help="Keeper Value = VORP + what the player is projected to be worth as a keeper in later seasons.",
+            )
 
         uncheck_all_button("fd_table", disabled=selected.empty)
 
         display_cols = [
-            "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
+            "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP",
+            "Keeper Value", "Injury",
         ]
         st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
         render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
@@ -698,6 +733,7 @@ def my_pool_tab(season: str, board: pd.DataFrame, options: list[str], labels: di
 
     projected_standings_section(pool, picks, options, labels, settings)
     position_outlook_section(season, pool, picks, options, labels, settings)
+    keeper_section(season, board, picks, labels, settings)
 
     st.write("#### Roster")
     if mine.empty:
@@ -834,6 +870,81 @@ def position_outlook_section(
             f"Projected points of the best player left at each position -- {when}{after}. Assumes each other "
             "manager takes the best player at a position chosen in proportion to his open roster slots."
         )
+
+
+def keeper_section(season: str, board: pd.DataFrame, picks: pd.DataFrame, labels: dict, settings: dict) -> None:
+    """Your final pick becomes your keeper (backlog.md K2): roster-planning
+    warnings so that pick can be a skater, when it comes up, and the best
+    keeper candidates left by keeper value (keeper.py)."""
+    st.write("#### Keeper")
+    keepers = draft_state.load_keepers(season)
+    status = keeper.roster_status(picks, keepers, settings)
+    if status["holds_keeper"]:
+        name = keepers.loc[keepers["manager"] == "me", "player_name"].iloc[0]
+        st.write(f"You hold **{name}** from last season -- he's your final-round pick, so you skip the last round.")
+        return
+    if status["picks_left"] == 0:
+        last = picks[picks["manager"] == "me"].sort_values("pick_number").iloc[-1]
+        if last["pos_group"] in keeper.KEEPER_POSITIONS:
+            st.success(f"Your keeper for next season: **{last['player_name']}** (your final pick).")
+        else:
+            st.info("Your final pick was a goalie/team -- no keeper for next season.")
+        return
+    if status["open_skater"] == 0:
+        st.info("Your remaining slots are goalie/team only, so your final pick won't be a keeper.")
+        return
+    if keeper.blocks_keeper(status, "F"):
+        st.warning(
+            "Only one F/D slot left while you still need a goalie/team. If you want a keeper, draft the "
+            "goalie/team first so your final pick can be a skater."
+        )
+
+    order = draft_state.load_draft_order(season)
+    if status["final_pick"]:
+        st.info(
+            "Your next pick is your last -- the skater you take **becomes your keeper**. Rank candidates by "
+            "Keeper Value."
+        )
+    elif order:
+        reserved = draft_state.reserved_slots(season, order)
+        next_slot = draft_state.next_slot(draft_state.load_picks(season), reserved)
+        rounds = draft_state.total_rounds(settings)
+        turns = standings.my_turns(order, next_slot, reserved, rounds, n=status["picks_left"])
+        if len(turns) == status["picks_left"]:
+            before = sum(1 for s in range(next_slot, turns[-1]) if s not in reserved)
+            st.write(
+                f"Your final pick (your keeper, if it's a skater) is round {turns[-1] // len(order) + 1}, "
+                f"{before} picks from now."
+            )
+
+    positions = [pos for pos in keeper.KEEPER_POSITIONS if status["open_by_pos"][pos] > 0]
+    available = draft_pool.undrafted_board(
+        board, draft_state.drafted_player_ids(season), teams=settings["num_managers"],
+        roster={"F": settings["forwards"], "D": settings["defense"]},
+    )
+    available = available[available["pos_group"].isin(positions)].assign(keeper_value=keeper.keeper_value)
+    top = available.sort_values("keeper_value", ascending=False).head(10)
+    points = st.column_config.NumberColumn(format="%.1f")
+    st.dataframe(
+        top[["Player", "Team", "Pos", "Age", "predicted_points", "next_season_points", "VORP", "future_value",
+             "keeper_value", "Notes"]].rename(
+            columns={
+                "predicted_points": "This Season", "next_season_points": "Next Season", "future_value": "Future Value",
+                "keeper_value": "Keeper Value",
+            }
+        ),
+        hide_index=True,
+        width="stretch",
+        column_config={c: points for c in ("This Season", "Next Season", "VORP", "Future Value", "Keeper Value")},
+    )
+    st.caption(
+        f"Best keeper candidates left at the positions you still need. Keeper Value = this season's VORP + "
+        f"Future Value: the next {keeper.FUTURE_SEASONS} seasons' projected points above a last-round pick "
+        f"(the position's replacement level), each season worth {keeper.DISCOUNT:.0%} of the one before. "
+        "Later seasons follow an age curve fit on past seasons -- young players rise, veterans fade. "
+        "Other managers hunt keepers in the last rounds too: if the top candidate's Future Value is far above "
+        "the rest, he may be worth taking a round early."
+    )
 
 
 def draft_log_tab(season: str, labels: dict) -> None:

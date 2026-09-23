@@ -153,7 +153,31 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
 - Verified: simulated 4-manager draft with 2 keepers → 62 live picks, the 2 keeper holders
   skipped in round 16, all 4 rosters end at exactly 16; headless app run shows no errors.
 
-**K2. Keeper value for the last pick.**
+**K2. Keeper value for the last pick — ✅ DONE (2026-09-23).**
+- **Built:** `src/keeper.py`. Keeper Value = live VORP + Future Value, where Future Value =
+  Σ over the next 3 seasons of 0.75^k × max(0, projected points − the position's full-draft
+  replacement level). Future seasons = this season's injury-free projection × an age curve
+  (next/this-season points ratio by age, ±1-age window, applied at half strength).
+- Rolling holdouts for N+2 (`python src/keeper.py`), mean MAE F / D: N+1 unchanged 12.14 / 8.26,
+  **N+1 × age curve 11.94 / 8.12**, direct N → N+2 model 12.32 / 8.82 (ran ~2.5 pts low). Age curve
+  bias for players ≤ 23: +0.2 F / −0.7 D (vs −1.9 / −1.9 unchanged). Full-strength ratio
+  over-projected young F by ~2 pts (the N+1 model already uses Age). Discount and horizon are
+  judgment calls, not fitted.
+- App: "Keeper Value" column + "Sort by" toggle in the F/D tab (defaults to Keeper Value when
+  your next pick is your last); My Pool "Keeper" section with when your final pick comes, the top
+  10 candidates left, and a heads-up when a pick would fill your last F/D slot with a goalie/team
+  still open (also in the pick panel). **Keeping is optional** (confirmed 2026-09-23): taking a
+  goalie/team last is allowed -- the app warns, never blocks.
+- Ages for NHL.com-only rookies come from the live NHL roster's `birthDate`
+  (`nhl_api.current_birth_dates`, same cached roster fetch as the team check), converted to
+  Hockey-Reference's Feb-1 age (`rank.fill_live_ages`; matches HR's Age for 99% of modeled players).
+- Last-round zone at 12 managers: Eklund, Frondell, Helenius, Michkov top the keeper ranking,
+  vs. 29–30-year-old D (DeAngelo, Ekblad) by VORP alone.
+- Not done: "must be playing in the NHL" isn't checked (AHL assignments -- see "No Team"); a rookie
+  not on a live roster (or NHL API down) has no age and gets a flat projection; NHL.com-only
+  rookies' base is NHL.com's number, which runs higher than the model's (#4).
+
+Original notes:
 - The last pick should be ranked on **this season + future seasons** value, not this season
   alone. With no limit on seasons, a keeper is a multi-year asset: young NHL skaters on the
   rise and rookies already in the NHL (no prospects, no goalies, no teams).

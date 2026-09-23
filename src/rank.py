@@ -31,6 +31,9 @@ Players on ESPN's live injury/suspension list (espn_injuries.py) have
 to miss before VORP is computed; the unadjusted number is kept as
 ``healthy_points``.
 
+Each player also gets ``next_season_points``/``future_value`` -- what he'd
+be worth as a keeper beyond this season (keeper.py).
+
 F/D only -- goalies and teams are ranked separately off NHL.com's
 projections (see draft_pool.goalie_pool / team_pool).
 """
@@ -44,6 +47,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import espn_injuries
+import keeper
 import loading
 import nhl_api
 import nhl_projections
@@ -147,6 +151,30 @@ def add_vorp(df: pd.DataFrame, teams: int, roster: dict, filled: dict | None = N
     return pd.concat(ranked, ignore_index=True)
 
 
+def age_in_season(birth_dates: pd.Series, season: str) -> pd.Series:
+    """Age by Hockey-Reference's convention (age on February 1 of the
+    season's second year), from 'YYYY-MM-DD' birth dates; NaN if unknown."""
+    ref = pd.Timestamp(year=loading._season_start_year(season) + 1, month=2, day=1)
+    born = pd.to_datetime(birth_dates, errors="coerce")
+    before_birthday = (born.dt.month > ref.month) | ((born.dt.month == ref.month) & (born.dt.day > ref.day))
+    return ref.year - born.dt.year - before_birthday.astype(int)
+
+
+def fill_live_ages(df: pd.DataFrame, birth_dates: dict, as_of_season: str = LATEST_SEASON) -> pd.DataFrame:
+    """Age (during ``as_of_season``, like every modeled row) from the live
+    NHL roster's birth date (nhl_api.current_birth_dates) for NHL.com-only
+    players: those with no Hockey-Reference history have no Age at all, and
+    those with a few call-up games carry the Age of their last HR season,
+    not ``as_of_season``'s. Modeled players keep Hockey-Reference's Age. No
+    match (or no live data) leaves Age as it was."""
+    out = df.copy()
+    target = out["Age"].isna() | (out["source"] == "nhl.com")
+    keys = [(nhl_api.normalize_name(n), g) for n, g in zip(out.loc[target, "Player"], out.loc[target, "pos_group"])]
+    live = age_in_season(pd.Series([birth_dates.get(k) for k in keys], index=out.index[target], dtype=object), as_of_season)
+    out.loc[target, "Age"] = live.fillna(out.loc[target, "Age"])
+    return out
+
+
 def build_draft_board(
     teams: int,
     roster: dict,
@@ -175,14 +203,17 @@ def build_draft_board(
     ranked = add_vorp(predicted, teams=teams, roster=roster)
     ranked = notable.add_notable_flags(ranked, df_all, LATEST_SEASON)
 
-    team_map, team_fetch_complete = {}, True
+    team_map, team_fetch_complete, birth_dates = {}, True, {}
     if fetch_live_team_changes:
         try:
             team_map, team_fetch_complete = nhl_api.current_team_map()
         except Exception:
             team_map, team_fetch_complete = {}, False
+        birth_dates = nhl_api.current_birth_dates()
     ranked["team_change"] = nhl_api.detect_team_changes(ranked, team_map)
     ranked = nhl_api.apply_live_team(ranked, team_map)
+    ranked = fill_live_ages(ranked, birth_dates)
+    ranked = keeper.add_future_value(ranked, keeper.age_curve(pairs, full_length_seasons(df_all)))
     if team_map and team_fetch_complete:
         # NHL.com-only prospects may not be on a live NHL roster yet, but
         # NHL.com projects them to play -- "No Team" would be misleading.
@@ -202,6 +233,7 @@ def build_draft_board(
         loading.ID_COL, "Player", "Team", "Pos", "pos_group", "Age", "GP",
         "feature_season", "seasons_back",
         "predicted_points", "healthy_points", "games_missed", "nhl_projection", "source", "pos_rank", "VORP",
+        "next_season_points", "future_value",
         "fragile", "trend", "team_change", "rookie", "Notes", "injury",
     ]
     result = ranked.sort_values("VORP", ascending=False)[cols].reset_index(drop=True)

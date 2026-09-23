@@ -268,6 +268,17 @@ season's projections need a new folder and that constant bumped.
       pick quality, not pick count. Roster-needs table: best available now / at your next pick /
       at the pick after, with other managers' picks walked along the snake (position chosen in
       proportion to each manager's open slots); "Big drop" alert at >= `BIG_DROP_PTS` (6).
+- [x] Keeper value for the last pick (backlog K2): `src/keeper.py`. Your final pick becomes your
+      keeper, so it's ranked on Keeper Value = live VORP + `future_value` (next `FUTURE_SEASONS`
+      seasons' points above the position's full-draft replacement level, discounted `DISCOUNT`
+      per season, floored at 0 since a bad keeper just gets released). Future seasons = this
+      season's `healthy_points` x `age_curve` (next/this-season points ratio by age, half
+      strength), which beat a direct N -> N+2 model in rolling holdouts (`python src/keeper.py`;
+      `loading.make_training_pairs(gap=2)`). Board columns `next_season_points`/`future_value`;
+      app: Keeper Value column + sort toggle (F/D tab), "Keeper" section in My Pool, and a
+      warning before you fill your last F/D slot with a goalie/team still open -- a warning only,
+      since keeping is optional (a goalie/team last is allowed). NHL.com-only rookies' Age comes
+      from the live roster `birthDate` (`nhl_api.current_birth_dates` -> `rank.fill_live_ages`).
 
 ## Setup
 ```

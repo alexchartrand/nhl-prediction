@@ -117,7 +117,8 @@ def current_team_codes(timeout: float = REQUEST_TIMEOUT) -> list[str]:
     return [team["code"] for team in current_teams(timeout)]
 
 
-def _parse_roster(payload: dict) -> list[tuple[tuple[str, str], str]]:
+def _parse_roster(payload: dict) -> list[tuple[tuple[str, str], str | None]]:
+    """[((normalized_name, pos_group), birth_date 'YYYY-MM-DD' or None)]."""
     players = []
     for group_key in ("forwards", "defensemen", "goalies"):
         for player in payload.get(group_key, []):
@@ -125,11 +126,11 @@ def _parse_roster(payload: dict) -> list[tuple[tuple[str, str], str]]:
             if pos_group is None:
                 continue
             full_name = f"{player['firstName']['default']} {player['lastName']['default']}"
-            players.append(((normalize_name(full_name), pos_group), pos_group))
+            players.append(((normalize_name(full_name), pos_group), player.get("birthDate")))
     return players
 
 
-# team_code -> (fetched_at, [(name_key, ...)]) for every roster fetched so
+# team_code -> (fetched_at, [(name_key, birth_date)]) for every roster fetched so
 # far in this process. Lets a rate-limited fetch resume with only the teams
 # still missing instead of restarting from team 1 (which is what kept
 # re-tripping the limiter), and lets the board, goalie and team views share
@@ -216,6 +217,27 @@ def current_team_map(timeout: float = REQUEST_TIMEOUT) -> tuple[dict[tuple[str, 
         return fetch_current_rosters(timeout)
     except Exception:
         return {}, False
+
+
+def current_birth_dates(timeout: float = REQUEST_TIMEOUT) -> dict[tuple[str, str], str]:
+    """{(normalized_name, pos_group): 'YYYY-MM-DD'} for every current roster
+    player, from the same roster fetch as current_team_map -- cached, so
+    right after it this costs one standings request, not 32 roster ones.
+    Names on more than one roster are left out (ambiguous). Never raises;
+    {} on any failure."""
+    try:
+        fetch_current_rosters(timeout)  # (re)fills _ROSTER_CACHE with current, fresh rosters
+        dates: dict[tuple[str, str], str] = {}
+        dupes: set[tuple[str, str]] = set()
+        for _, players in _ROSTER_CACHE.values():
+            for key, born in players:
+                if key in dates:
+                    dupes.add(key)
+                if born:
+                    dates[key] = born
+        return {k: v for k, v in dates.items() if k not in dupes}
+    except Exception:
+        return {}
 
 
 def detect_team_changes(board: pd.DataFrame, team_map: dict[tuple[str, str], str | None]) -> pd.Series:

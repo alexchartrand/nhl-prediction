@@ -218,7 +218,7 @@ def latest_healthy_row(
 
 
 def make_training_pairs(
-    df: pd.DataFrame, feature_cols: list[str], min_feature_gp: int = 10
+    df: pd.DataFrame, feature_cols: list[str], min_feature_gp: int = 10, gap: int = 1
 ) -> pd.DataFrame:
     """One row per player per season transition, fallback features -> that season's target.
 
@@ -228,13 +228,17 @@ def make_training_pairs(
     :func:`latest_healthy_row`) -- so a player who was hurt the season right
     before S still gets a training row, built from his last healthy season,
     instead of being dropped. The target is always season S's actual result.
-    Only consecutive calendar-year transitions are used, to avoid silently
-    pairing across a gap if the season files ever aren't contiguous.
+    Only transitions exactly ``gap`` calendar years apart are used (1 =
+    consecutive seasons), to avoid silently pairing across a missing season
+    file. ``gap=2`` pairs year-N features with year-N+2 results (keeper.py's
+    eval).
     """
     seasons = sorted(df["season"].unique(), key=_season_start_year)
+    by_year = {_season_start_year(s): s for s in seasons}
     pairs = []
-    for prev_season, target_season in zip(seasons, seasons[1:]):
-        if _season_start_year(target_season) != _season_start_year(prev_season) + 1:
+    for prev_season in seasons:
+        target_season = by_year.get(_season_start_year(prev_season) + gap)
+        if target_season is None:
             continue
         features = latest_healthy_row(df, prev_season, min_feature_gp)
         if features.empty:
