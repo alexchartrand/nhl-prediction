@@ -16,10 +16,11 @@ import pandas as pd
 import loading
 from features import MIN_GP
 
-# How many of a player's last FRAGILE_LOOKBACK_SEASONS *qualifying* seasons
-# (GP >= MIN_GP, i.e. an actual NHL roster player that year, not a brief
-# call-up) need to look injury-shortened -- GP under FRAGILE_GP_PCT of that
-# season's league-wide max GP -- to call him fragile.
+# How many of a player's *qualifying* seasons (GP >= MIN_GP, i.e. an actual
+# NHL roster player that year, not a brief call-up) within the last
+# FRAGILE_LOOKBACK_SEASONS league seasons need to look injury-shortened --
+# GP under FRAGILE_GP_PCT of that season's league-wide max GP -- to call him
+# fragile.
 FRAGILE_LOOKBACK_SEASONS = 4
 FRAGILE_MIN_FLAGGED_SEASONS = 2
 FRAGILE_GP_PCT = 0.75

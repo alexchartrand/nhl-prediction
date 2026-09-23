@@ -3,12 +3,13 @@
 Run with:
     .venv/Scripts/python.exe -m streamlit run src/app.py
 
-Lets the user browse the ranked F/D draft board and the unranked goalie/team
-lists, filter by position/name, mark players (or a team) as drafted (by
-themselves or another manager) with VORP recomputed on who's left, undo a
-pick, and look up any player's season history. "My Pool" shows the user's
-own roster against the 9F/5D/1G/1TEAM targets. Picks and manager names
-persist to ``state/`` so they survive an app restart mid-draft.
+Lets the user browse the ranked F/D draft board and the goalie/team boards
+(ranked off NHL.com projections, see draft_pool.py), filter by
+position/name, mark players (or a team) as drafted (by themselves or another
+manager) with VORP recomputed on who's left, undo a pick, and look up any player's season history. "My Pool" shows the user's
+own roster against the season's roster-slot targets. All draft state
+(picks, managers, settings, keepers) persists per season under
+``state/seasons/<season>/`` so it survives an app restart mid-draft.
 """
 
 from __future__ import annotations

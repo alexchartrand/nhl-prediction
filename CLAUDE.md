@@ -7,11 +7,17 @@ Build a model to predict player fantasy points for a season-long hockey pool, to
 - Draft is turn-based (like a snake draft), no player picked twice
 - Roster per manager: 9 forwards, 5 defense, 1 goalie, 1 team
 - Winner = highest total points at end of season
+- Pool size and roster slots are per-season settings (`draft_state.DEFAULT_SETTINGS`: 12
+  managers, 9F/5D/1G/1TEAM), editable in the app. Once a draft order is set, its length is
+  the manager count -- the real count isn't known until draft day.
 
 ## Data
 Hockey-Reference season exports in `data/`, **10 seasons: 2016-17 through 2025-26**:
 - `skaters-{season}.csv` — basic stats (~600 F / ~325 D / ~100 G per season)
 - `skaters-advance-{season}.csv` — Corsi/Fenwick/PDO/zone starts (skaters only, no goalies)
+- `goalies-{YYYY}-{YYYY}.csv` — goalie stats (W/L/T-O/SV%/GAA/SO/GSAA/...), one header row.
+  Note the **hyphen** (`goalies-2025-2026.csv`) vs the skater files' underscore
+  (`skaters-2025_2026.csv`); `loading.load_goalie_season` maps between the two.
 - `allPlayersLookup.csv` — different source (NHL `playerId`, not HR slugs); only joins by
   name. Unique value is exact `birthDate` + handedness. Unused so far.
 
@@ -20,14 +26,16 @@ an unnamed trailing column (read as `-9999`) which is the only reliable join key
 players appearing as a `2TM`/`3TM` total row plus per-team splits, clock-format TOI, and a
 `League Average` footer row. `load_all_seasons()` stacks every season found; `make_training_pairs()`
 builds year-N-features → year-N+1-target rows for consecutive season pairs only (a player who
-sat out a year isn't paired across the gap) — 3965 skater pairs across the 5 transitions currently
-available.
+sat out a year isn't paired across the gap) — 6561 skater pairs (4269 F / 2292 D) across the 9
+transitions currently available. Goalies load separately via `load_all_goalie_seasons()`.
 
 Note: **2020-21 was COVID-shortened (56 GP max)**. It's used as a features-year without special
 handling since the model runs on per-game rates, but keep an eye out if it behaves like an outlier.
 
 ### Data gaps
-- Goalie stats are now loaded (see above); the skater export's goalie rows (assists only) are ignored.
+- Goalie stats come from the `goalies-*.csv` files above; the skater export's goalie rows
+  (assists only) are ignored.
+- No per-game logs (so no hat-trick bonus) and no injury/active-roster flag -- see Status.
 
 `data/nhl 2026-2027 projections/` — NHL.com's own 2026-27 projections, pasted as
 `goalies.txt`/`teams.txt`/`fowards.txt`/`defense.txt` (one numbered line per player/team,
@@ -37,7 +45,8 @@ own notes: team win totals are NHL.com's per-goalie win projections summed by te
 `src/nhl_projections.py` parses all four; `goalies.txt`/`teams.txt` drive ranking, while
 `fowards.txt`/`defense.txt` are shown as a reference "NHL.com Projection" column in the
 app's F/D table and stand in as `predicted_points` only for rookies the model can't rank —
-see Status below.
+see Status below. The folder name is hardcoded in `nhl_projections.PROJECTIONS_DIR` -- a new
+season's projections need a new folder and that constant bumped.
 
 ## Settled
 - **Goalie scoring**: 2 per win (regular or OT/SO), 1 per OT/SO loss (HR's `T/O` column),
@@ -61,7 +70,8 @@ see Status below.
 - Compute **value over replacement** per position (predicted points − replacement-level player at that position) to actually drive draft order, not raw predicted points alone.
 
 ## Tech Stack
-- Python, pandas, scikit-learn, lightgbm/xgboost
+- Python, pandas, scikit-learn, lightgbm (xgboost never used), streamlit (draft-day app),
+  requests (NHL API), mistralai + python-dotenv (the app's "Explore" button, see Status)
 - Alexandre has prior experience with `requests`-only API integrations (see Intervals.icu project) — similar pattern likely reusable if pulling live NHL stats
 
 ## Status
@@ -69,7 +79,7 @@ see Status below.
 - [x] Load and explore last year's stats (`src/loading.py`)
 - [x] Multi-season data (10 seasons, 2016-17 to 2025-26 — expanded from 6 after confirming
       more data helps) + train/target pairing
-- [x] Build position-specific baseline models (F, D — goalies deferred). `src/train.py`.
+- [x] Build position-specific baseline models (F, D — goalies came later, see below). `src/train.py`.
       ElasticNet still wins both on holdout Spearman (0.84 F / 0.78 D, 2024-25 features ->
       real 2025-26 results), but the gap over LightGBM narrowed a lot going from 6->10
       seasons (F holdout MAE 11.01->10.52) — LightGBM was data-starved before, not a fixed
@@ -87,10 +97,14 @@ see Status below.
       7.85->7.61, top-10 60.0 vs 66.2. Tried pro-rating short-season targets to 82 GP instead
       / in addition -- no better. `python src/train.py` prints the calibrated rows too.
       F/D mix of the board's top 50 barely moved (18 D before and after).
-- [x] Add value-over-replacement draft ranking. `src/rank.py`, run directly to regenerate
-      `output/draft_board.csv`. Pool size confirmed as **12 teams**; replacement cutoff =
-      108 forwards / 60 defense (9F + 5D roster x 12 teams). Uses ElasticNet (won the
-      holdout eval) refit on all season-pairs, not just train.py's train-only split.
+- [x] Add value-over-replacement draft ranking. `src/rank.py` (`build_draft_board`).
+      Replacement cutoff = managers x roster slots per position (108 F / 60 D at the default
+      12 x 9F/5D), taken from the season's settings (see Pool Format). Uses ElasticNet (won
+      the holdout eval) refit on all season-pairs, not just train.py's train-only split.
+      The app saves its board as `output/draft_board_<season>.csv` (rebuilt by the app's
+      "Recompute draft board" button); running `rank.py` directly writes a separate
+      `output/draft_board.csv` using the most recently created season's settings -- handy for
+      inspection, but the app doesn't read it.
 - [x] Injury fallback: `loading.latest_healthy_row` -- a player under `features.MIN_GP`
       games in his most recent season falls back to his last season with enough games,
       instead of being dropped or judged on a handful of games. Used both when building
@@ -99,17 +113,18 @@ see Status below.
       draft-board predictions (`rank.py`, capped at `MAX_SEASONS_BACK = 1` -- unlimited
       lookback there resurrected actually-retired players like Shea Weber/Ryan Ellis,
       since the data has no active-roster flag to tell "injured" apart from "retired,"
-      just recency). 893 players on the board now (115 via the fallback), up from 778.
-      True rookies with zero NHL history in any loaded season still aren't covered --
-      no fallback season exists for them; would need external prospect data.
+      just recency). 893 modeled players on the board (115 via the fallback), up from 778.
+      The model still can't rank true rookies (no fallback season exists for them); the ones
+      NHL.com projects are now added from its projections instead -- see the NHL.com-only
+      rookies item below (903 rows total).
 - [x] "Notes" draft-day tags: `src/notable.py` (fragile/declining/rising, local data only)
       + `src/nhl_api.py` (live NHL API team-change check) combine into a single `Notes`
       column (e.g. `"New Team • Fragile • Declining"`) shown in `app.py`'s F/D table.
       No live "currently injured" flag -- the NHL's public API has no injury/IR endpoint
       (checked; genuinely undocumented anywhere), out of scope entirely. Fragile/trend
       reuse data already loaded (`GP` history, `prior_fantasy_points_pg`), no network:
-      fragile = GP short of `FRAGILE_GP_PCT` of that season's league-max in >=2 of the
-      last 3 qualifying seasons; trend = >=20%/25% point-rate move combined with an age
+      fragile = GP short of `FRAGILE_GP_PCT` (75%) of that season's league-max in >=2
+      qualifying (GP >= `MIN_GP`) seasons within the last 4 league seasons; trend = >=20%/25% point-rate move combined with an age
       cutoff (30+/23-) to separate real decline/breakout from noise. Team-change hits
       `api-web.nhle.com` (unauthenticated, unofficial, does rate-limit -- confirmed live)
       for all current rosters, matched to Hockey-Reference names by normalized
@@ -127,15 +142,21 @@ see Status below.
       total MAE 18.6, Spearman 0.50). Much noisier than skaters -- goalie output hinges on workload/team,
       which the data only weakly reveals. Tried and dropped: team goals-for context (no gain), LightGBM
       (worse; ~570 train rows). 2-season averages helped modestly and are kept. Goalies with <10 GP in
-      their feature season get no prediction (still listed/pickable). Integrated in the app's Goalies
-      tab (`draft_pool.goalie_pool` / `undrafted_goalies`) with VORP vs the teams x goalie-slots-th goalie.
-      Not modeled: starter/backup role changes from trades or signings.
+      their feature season get no prediction. Not modeled: starter/backup role changes from trades
+      or signings -- which is why the app's goalie ranking was later switched to NHL.com's
+      projections (see below). The model is kept for its eval but no longer feeds the app; the app
+      still uses `goalies.load_scored_goalies()` for goalie history and points-per-win.
 - [x] Draft-day app: `src/app.py`, run via `.venv/Scripts/python.exe -m streamlit
-      run src/app.py`. Live view over `rank.build_draft_board()` -- filter by
+      run src/app.py` (or `run_app.bat`). Live view over `rank.build_draft_board()` -- filter by
       position/name, mark a player picked (by you or another manager), undo,
-      and pull up any player's season history. Picks persist to
-      `state/picks.json` / `state/managers.json` (JSON, survives restarts) so
-      a multi-hour live draft isn't lost on a browser/process restart. VORP
+      and pull up / compare (up to 3) players' season histories. Tabs: Forwards & Defense,
+      Goalies, Teams, My Pool, Draft Log. All draft state is **per season**: the sidebar
+      season picker ("+ New season..." creates one) scopes everything to
+      `state/seasons/<season>/` -- `picks.json`, `managers.json`, `settings.json`,
+      `keepers.json` (JSON, atomic writes, survives restarts) -- so a multi-hour live draft
+      isn't lost on a restart and a new pool year starts clean without touching old drafts.
+      Pre-season-scoped `state/picks.json`/`managers.json` are migrated once into
+      `state/seasons/2026-2027/` (`draft_state._migrate_legacy_state`). VORP
       recomputes live (`src/draft_pool.undrafted_board`) against only
       undrafted players, with the replacement level at the (open slots left at that
       position)-th best remaining player (`add_vorp`'s `filled`, counting live picks +
@@ -143,9 +164,14 @@ see Status below.
       reaches/keepers/position runs. (Until 2026-09-23 the cutoff stayed at teams x slots
       among the remaining players, which slid the replacement level down as players were
       drafted and inflated VORP at positions drafted faster.) Reuses `rank.add_vorp` rather
-      than a second implementation. Goalies get a list ranked by the goalie model (`draft_pool.goalie_pool`,
-      `min_gp=1` for listing so backups stay pickable; unmodeled ones sort last). The "1 team" roster slot isn't modeled -- tracked manually
-      outside the app.
+      than a second implementation. Goalies and teams: originally an unranked list / untracked
+      slot; both are now ranked off NHL.com projections (see below).
+- [x] "Explore" button (`src/explore.py`): in the compare view under any table, sends the
+      checked players' context to Mistral's web-search-grounded chat (`MISTRAL_MODEL`) for
+      current news/injury/form -- a summary for 1 player, a pick recommendation for 2-3.
+      Needs `MISTRAL_API_KEY` (env var or `.env`, loaded by python-dotenv). Unlike `nhl_api.py`,
+      failures surface as an error in the app rather than degrading silently -- it's a manual,
+      user-clicked feature with no sensible fallback. Not part of the board build.
 
 - [x] Snake-draft auto-advance: "Managers in draft order" box in the Edit managers form (the only manager list; one per line, every
       manager once incl. your own team; stored in `managers.json`). `draft_state.snake_manager` /
@@ -217,3 +243,6 @@ see Status below.
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
+Launch the app with `run_app.bat` (or the streamlit command above). Optional: `MISTRAL_API_KEY`
+in `.env` for the Explore button; nothing else needs secrets. New-season maintenance steps are
+in `README.md`.

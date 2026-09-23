@@ -26,8 +26,8 @@ with NHL.com's fantasy-point projection standing in as ``predicted_points``
 modeled players -- two different projection sources in one ranking. Every
 player also carries ``nhl_projection`` for side-by-side reference.
 
-Goalies are out of scope until goalie stats are added (see CLAUDE.md). The
-"1 team" roster slot isn't modeled at all.
+F/D only -- goalies and teams are ranked separately off NHL.com's
+projections (see draft_pool.goalie_pool / team_pool).
 """
 
 from __future__ import annotations
