@@ -262,6 +262,13 @@ season's projections need a new folder and that constant bumped.
       skips them. `drafted_player_ids`/`roster_picks` include keepers, so they're off the board and
       count toward roster limits and "My Pool". League rules and remaining ideas: `backlog.md`.
 
+- [x] Projected standings + roster needs in "My Pool" (backlog #5): `src/standings.py`.
+      Each manager's projected total = drafted points + open slots at the position's expected
+      fill value (mean of the top (league open slots) remaining players), so standings reflect
+      pick quality, not pick count. Roster-needs table: best available now / at your next pick /
+      at the pick after, with other managers' picks walked along the snake (position chosen in
+      proportion to each manager's open slots); "Big drop" alert at >= `BIG_DROP_PTS` (6).
+
 ## Setup
 ```
 python -m venv .venv

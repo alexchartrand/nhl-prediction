@@ -110,7 +110,17 @@ Draft is **Friday 2026-09-25**; items are split into "before the draft" and "aft
   for NHL.com's 2025-26 fantasy projections; otherwise start at 50/50.
 - Disagreement column = where to spend research time (the "Explore" button).
 
-### 5. Projected standings + roster needs in "My Pool" — S–M
+### 5. Projected standings + roster needs in "My Pool" — ✅ DONE (2026-09-23)
+- **Built:** `src/standings.py`, shown in the "My Pool" tab. Standings = drafted players'
+  projected points (injury-adjusted, keepers included) + each open slot at the average of the
+  best players left to fill the league's open slots at that position -- same for everyone, so
+  a manager who has picked less isn't shown as behind. Top 2 marked; banner with your projected
+  rank and gap to #3 / #2.
+- Roster needs: open slots per position + picks left, and for each needed position the best
+  player now, expected best at your next pick and at the pick after (other managers' picks
+  walked along the snake, each one at a position in proportion to that manager's open slots).
+  "Big drop" alert when waiting a round costs ≥ 6 pts (`standings.BIG_DROP_PTS`; in a simulated
+  12-manager draft, one-round drops were mostly 0–5, with a few tier breaks at 7–16).
 - Projected total for every manager from their picks → live projected standings (top 2 paid).
 - Your remaining needs vs. picks left (e.g. "3 D needed, 4 picks left"); alert when a
   position is about to run out (a big drop to the next tier).

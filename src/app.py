@@ -7,7 +7,9 @@ Lets the user browse the ranked F/D draft board and the goalie/team boards
 (ranked off NHL.com projections, see draft_pool.py), filter by
 position/name, mark players (or a team) as drafted (by themselves or another
 manager) with VORP recomputed on who's left, undo a pick, and look up any player's season history. "My Pool" shows the user's
-own roster against the season's roster-slot targets. All draft state
+own roster against the season's roster-slot targets, projected standings for
+every manager, and what waiting a round costs at each position still needed
+(standings.py). All draft state
 (picks, managers, settings, keepers) persists per season under
 ``state/seasons/<season>/`` so it survives an app restart mid-draft.
 """
@@ -27,6 +29,7 @@ import explore
 import features
 import goalies as goalies_module
 import rank
+import standings
 
 # First three slots of the validated categorical palette (dataviz skill) --
 # these three pass the CVD/contrast floors together in both light and dark.
@@ -647,22 +650,24 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
 POS_GROUP_LABELS = {"F": "Forwards", "D": "Defense", "G": "Goalie", "TEAM": "Team"}
 
 
-def my_pool_tab(season: str, labels: dict, settings: dict) -> None:
-    roster_targets = {
-        "F": settings["forwards"],
-        "D": settings["defense"],
-        "G": settings["goalies"],
-        "TEAM": settings["team_slots"],
-    }
+def my_pool_tab(season: str, board: pd.DataFrame, options: list[str], labels: dict, settings: dict) -> None:
+    roster_targets = standings.slot_targets(settings)
+    pool = standings.points_pool(board, get_goalies(season), get_teams(season))
     picks = draft_state.roster_picks(season)
     mine = picks[picks["manager"] == "me"].sort_values("pick_number", na_position="first")
+    mine = mine.merge(pool[["player_id", "predicted_points"]], on="player_id", how="left")
 
     st.subheader(labels.get("me", "me"))
-    cols = st.columns(len(roster_targets))
+    cols = st.columns(len(roster_targets) + 1)
     for col, (pos, target) in zip(cols, roster_targets.items()):
         have = (mine["pos_group"] == pos).sum()
         col.metric(POS_GROUP_LABELS[pos], f"{have}/{target}")
+    cols[-1].metric("Picks left", sum(roster_targets.values()) - len(mine))
 
+    projected_standings_section(pool, picks, options, labels, settings)
+    position_outlook_section(season, pool, picks, options, labels, settings)
+
+    st.write("#### Roster")
     if mine.empty:
         st.write("No players drafted yet.")
         return
@@ -673,11 +678,129 @@ def my_pool_tab(season: str, labels: dict, settings: dict) -> None:
             continue
         st.write(f"**{label}**")
         st.dataframe(
-            sub[["pick_number", "player_name", "keeper"]].rename(
-                columns={"pick_number": "Pick #", "player_name": "Player", "keeper": "Keeper"}
+            sub[["pick_number", "player_name", "predicted_points", "keeper"]].rename(
+                columns={
+                    "pick_number": "Pick #", "player_name": "Player", "predicted_points": "Projected Points",
+                    "keeper": "Keeper",
+                }
             ),
             hide_index=True,
             width="stretch",
+            column_config={"Projected Points": st.column_config.NumberColumn(format="%.1f")},
+        )
+
+
+def projected_standings_section(
+    pool: pd.DataFrame, picks: pd.DataFrame, options: list[str], labels: dict, settings: dict
+) -> None:
+    """Every manager's projected final total, from their picks plus open
+    slots at the expected fill value (see standings.py)."""
+    st.write("#### Projected standings")
+    table = standings.projected_standings(pool, picks, options, settings)
+    me = table.loc[table["manager"] == "me"].iloc[0]
+    rank_, total = int(me["rank"]), me["projected_total"]
+    paid = standings.PAID_PLACES
+    if len(table) > paid:
+        if rank_ <= paid:
+            first_out = table.iloc[paid]
+            st.success(
+                f"Projected **#{rank_}** -- {total - first_out['projected_total']:.0f} pts ahead of "
+                f"#{paid + 1} ({labels.get(first_out['manager'], first_out['manager'])})."
+            )
+        else:
+            last_paid = table.iloc[paid - 1]
+            st.warning(
+                f"Projected **#{rank_}** -- {last_paid['projected_total'] - total:.0f} pts behind "
+                f"#{paid} ({labels.get(last_paid['manager'], last_paid['manager'])})."
+            )
+    if table["unmatched"].sum():
+        st.warning(f"{int(table['unmatched'].sum())} rostered player(s) aren't on any board and count as 0 points.")
+
+    display = table.assign(
+        manager=table["manager"].map(lambda m: labels.get(m, m)),
+        paid=table["rank"] <= paid,
+    ).rename(
+        columns={
+            "rank": "Rank", "manager": "Manager", "picks": "Picks", "drafted_points": "Drafted Points",
+            "open_slots": "Open Slots", "projected_total": "Projected Total", "paid": "Top 2",
+        }
+    )
+    st.dataframe(
+        display[["Rank", "Manager", "Picks", "Drafted Points", "Open Slots", "Projected Total", "Top 2"]],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Drafted Points": st.column_config.NumberColumn(format="%.0f"),
+            "Projected Total": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+    fill = standings.expected_fill_values(pool, picks, settings)
+    st.caption(
+        "Projected Total = drafted players' projected points + each open slot at the average of the best players "
+        "left to fill the league's open slots there ("
+        + ", ".join(f"{POS_GROUP_LABELS[p]} {v:.0f}" for p, v in fill.items() if pd.notna(v))
+        + "), the same for every manager -- so the gaps come only from picks already made."
+    )
+
+
+def position_outlook_section(
+    season: str, pool: pd.DataFrame, picks: pd.DataFrame, options: list[str], labels: dict, settings: dict
+) -> None:
+    """For each position you still need: what's left now, at your next pick,
+    and at the one after -- flags positions where waiting a round costs a
+    tier (standings.BIG_DROP_PTS)."""
+    st.write("#### Roster needs")
+    order = draft_state.load_draft_order(season)
+    reserved = draft_state.reserved_slots(season, order) if order else set()
+    next_slot = draft_state.next_slot(draft_state.load_picks(season), reserved)
+    table, info = standings.position_outlook(pool, picks, options, settings, order, next_slot, reserved)
+    if table.empty:
+        st.write("Roster full.")
+        return
+
+    needs = ", ".join(f"{int(r.need)} {POS_GROUP_LABELS[r.pos_group]}" for r in table.itertuples())
+    st.write(f"Still needed: {needs} -- {int(table['need'].sum())} picks left.")
+    if not order:
+        st.caption("Set a draft order (Edit managers) to see what's expected to be left at your next picks.")
+        st.dataframe(
+            table[["pos_group", "need", "best_now"]].rename(
+                columns={"pos_group": "Position", "need": "Need", "best_now": "Best Available"}
+            ),
+            hide_index=True,
+        )
+        return
+
+    big = table[table["drop_if_wait"] >= standings.BIG_DROP_PTS]
+    for r in big.itertuples():
+        st.warning(
+            f"**{POS_GROUP_LABELS[r.pos_group]}**: expected to drop ~{r.drop_if_wait:.0f} pts if you wait "
+            f"until your pick after next ({r.at_next_pick:.0f} → {r.at_following_pick:.0f})."
+        )
+    display = table.assign(
+        pos_group=table["pos_group"].map(POS_GROUP_LABELS),
+        alert=table["drop_if_wait"].ge(standings.BIG_DROP_PTS).map({True: "Big drop", False: ""}),
+    ).rename(
+        columns={
+            "pos_group": "Position", "need": "Need", "best_now": "Best Now", "at_next_pick": "At Your Next Pick",
+            "at_following_pick": "At Your Pick After", "drop_if_wait": "Drop If You Wait", "alert": "Alert",
+        }
+    )
+    points = st.column_config.NumberColumn(format="%.1f")
+    st.dataframe(
+        display[["Position", "Need", "Best Now", "At Your Next Pick", "At Your Pick After", "Drop If You Wait", "Alert"]],
+        hide_index=True,
+        width="stretch",
+        column_config={c: points for c in ("Best Now", "At Your Next Pick", "At Your Pick After", "Drop If You Wait")},
+    )
+    before, between = info["picks_before_next"], info["picks_between"]
+    if before is None:
+        st.caption("You have no picks left in this draft.")
+    else:
+        when = "you're on the clock" if before == 0 else f"{before} pick(s) before your next turn"
+        after = f", then {between} before the one after" if between is not None else " (your last pick)"
+        st.caption(
+            f"Projected points of the best player left at each position -- {when}{after}. Assumes each other "
+            "manager takes the best player at a position chosen in proportion to his open roster slots."
         )
 
 
@@ -782,7 +905,7 @@ def main() -> None:
     with tab_teams:
         teams_tab(season, options, labels, settings)
     with tab_mypool:
-        my_pool_tab(season, labels, settings)
+        my_pool_tab(season, board, options, labels, settings)
     with tab_log:
         draft_log_tab(season, labels)
 
