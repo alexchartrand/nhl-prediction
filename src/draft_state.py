@@ -10,9 +10,18 @@ State is scoped **per season** (one pool year's draft, e.g. "2026-2027") so a
 new draft doesn't inherit last year's picks/managers, and last year's draft
 stays around to look back on. Each season gets its own directory under
 ``state/seasons/<season>/`` holding that season's ``picks.json`` and
-``managers.json``. A season name is free text (the user types it, e.g. when
+``managers.json`` (plus ``keepers.json``, see below). A season name is free text (the user types it, e.g. when
 starting a new pool year) but sanitized into a filesystem-safe directory
 name via ``slugify``.
+
+Keepers: each manager's last pick of a draft is his "keeper", kept into the
+next season, where it counts as his last-round pick -- so a manager holding
+one skips the final round. They're entered before the draft and stored apart
+from live picks (``keepers.json``, no pick_number, never undone by "undo last
+pick"), but count everywhere a roster is counted (``roster_picks``,
+``drafted_player_ids``). Their final-round slots aren't stored; they're
+derived from the current draft order and roster size (``reserved_slots``) so
+editing the order or settings afterwards can't leave them stale.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ LEGACY_MIGRATION_SEASON = "2026-2027"
 # out-of-turn override so the order continues from the overridden manager.
 # Missing (NaN) on picks made before a draft order was set.
 PICK_COLUMNS = ["player_id", "player_name", "pos_group", "manager", "pick_number", "timestamp", "slot"]
+KEEPER_COLUMNS = ["player_id", "player_name", "pos_group", "manager"]
 
 # League shape a season's VORP/roster tracking is computed against -- pool
 # size (num_managers) drives the VORP replacement-level cutoff (see
@@ -70,6 +80,10 @@ def _picks_path(season: str) -> Path:
 
 def _managers_path(season: str) -> Path:
     return _season_dir(season) / "managers.json"
+
+
+def _keepers_path(season: str) -> Path:
+    return _season_dir(season) / "keepers.json"
 
 
 def _settings_path(season: str) -> Path:
@@ -142,25 +156,55 @@ def snake_manager(order: list[str], slot: int) -> str:
     return order[i if rnd % 2 == 0 else n - 1 - i]
 
 
-def next_slot(picks: pd.DataFrame) -> int:
-    """Snake slot of the next pick: one past the last pick's slot. Picks made
-    before a draft order was set have no slot, so those count by pick number."""
+def total_rounds(settings: dict) -> int:
+    """Draft length in rounds: one pick per roster slot."""
+    return sum(settings[k] for k in ("forwards", "defense", "goalies", "team_slots"))
+
+
+def keeper_slot(order: list[str], manager: str, rounds: int) -> int:
+    """``manager``'s turn in the final round -- the slot his keeper fills."""
+    n = len(order)
+    rnd = rounds - 1
+    pos = order.index(manager)
+    return rnd * n + (pos if rnd % 2 == 0 else n - 1 - pos)
+
+
+def reserved_slots(season: str, order: list[str] | None = None) -> set[int]:
+    """Final-round slots already filled by keepers, which the snake skips."""
+    order = load_draft_order(season) if order is None else order
+    if not order:
+        return set()
+    rounds = total_rounds(load_settings(season))
+    return {keeper_slot(order, m, rounds) for m in load_keepers(season)["manager"] if m in order}
+
+
+def slot_after(slot: int, reserved: set[int]) -> int:
+    """First slot at or after ``slot`` that isn't taken by a keeper."""
+    while slot in reserved:
+        slot += 1
+    return slot
+
+
+def next_slot(picks: pd.DataFrame, reserved: set[int] = frozenset()) -> int:
+    """Snake slot of the next pick: one past the last pick's slot, skipping
+    slots filled by keepers. Picks made before a draft order was set have no
+    slot, so those count by pick number."""
     if picks.empty:
-        return 0
+        return slot_after(0, reserved)
     last = picks.sort_values("pick_number").iloc[-1]
     if pd.isna(last["slot"]):
-        return int(last["pick_number"])
-    return int(last["slot"]) + 1
+        return slot_after(int(last["pick_number"]), reserved)
+    return slot_after(int(last["slot"]) + 1, reserved)
 
 
-def _pick_slot(picks: pd.DataFrame, order: list[str], manager: str) -> int | None:
+def _pick_slot(picks: pd.DataFrame, order: list[str], manager: str, reserved: set[int]) -> int | None:
     """Slot to record for a pick by ``manager``. On turn, the expected slot.
     Off turn (manual override), the overridden manager's own slot in the
     current round, so the sequence continues from him rather than snapping
     back to where it was."""
     if not order or manager not in order:
         return None
-    expected = next_slot(picks)
+    expected = next_slot(picks, reserved)
     if snake_manager(order, expected) == manager:
         return expected
     n = len(order)
@@ -174,13 +218,14 @@ def active_manager(season: str) -> str | None:
     order = load_draft_order(season)
     if not order:
         return None
-    return snake_manager(order, next_slot(load_picks(season)))
+    return snake_manager(order, next_slot(load_picks(season), reserved_slots(season, order)))
 
 
 def add_pick(season: str, player_id: str, player_name: str, pos_group: str, manager: str) -> pd.DataFrame:
     picks = load_picks(season)
-    if player_id in set(picks["player_id"]):
+    if player_id in drafted_player_ids(season):
         return picks
+    order = load_draft_order(season)
     row = {
         "player_id": player_id,
         "player_name": player_name,
@@ -188,7 +233,7 @@ def add_pick(season: str, player_id: str, player_name: str, pos_group: str, mana
         "manager": manager,
         "pick_number": len(picks) + 1,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "slot": _pick_slot(picks, load_draft_order(season), manager),
+        "slot": _pick_slot(picks, order, manager, reserved_slots(season, order)),
     }
     picks = pd.concat([picks, pd.DataFrame([row])], ignore_index=True)
     save_picks(season, picks)
@@ -205,7 +250,47 @@ def undo_last_pick(season: str) -> pd.DataFrame:
 
 
 def drafted_player_ids(season: str) -> set[str]:
-    return set(load_picks(season)["player_id"])
+    """Live picks and keepers -- everyone off the board."""
+    return set(load_picks(season)["player_id"]) | set(load_keepers(season)["player_id"])
+
+
+def load_keepers(season: str) -> pd.DataFrame:
+    path = _keepers_path(season)
+    if not path.exists():
+        return pd.DataFrame(columns=KEEPER_COLUMNS)
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    return pd.DataFrame(rows, columns=KEEPER_COLUMNS)
+
+
+def set_keeper(season: str, player_id: str, player_name: str, pos_group: str, manager: str) -> None:
+    """One keeper per manager -- setting another replaces his previous one.
+    Raises ValueError for a non-skater or a player already picked/kept."""
+    if pos_group not in ("F", "D"):
+        raise ValueError("Keepers must be forwards or defensemen.")
+    keepers = load_keepers(season)
+    keepers = keepers[keepers["manager"] != manager]
+    if player_id in set(load_picks(season)["player_id"]) | set(keepers["player_id"]):
+        raise ValueError(f"{player_name} is already drafted or kept by another manager.")
+    row = {"player_id": player_id, "player_name": player_name, "pos_group": pos_group, "manager": manager}
+    keepers = pd.concat([keepers, pd.DataFrame([row])], ignore_index=True)
+    _write_json(_keepers_path(season), keepers.to_dict(orient="records"))
+
+
+def remove_keeper(season: str, manager: str) -> None:
+    keepers = load_keepers(season)
+    _write_json(_keepers_path(season), keepers[keepers["manager"] != manager].to_dict(orient="records"))
+
+
+def roster_picks(season: str) -> pd.DataFrame:
+    """Every player on a roster: live picks plus keepers (``keeper`` True,
+    no pick_number). Use for roster counts/views; use ``load_picks`` for
+    anything about the order of live picks (snake, undo, last pick)."""
+    picks = load_picks(season).assign(keeper=False)
+    keepers = load_keepers(season).assign(keeper=True)
+    if keepers.empty:
+        return picks
+    return pd.concat([picks, keepers], ignore_index=True)
 
 
 def load_managers(season: str) -> dict:

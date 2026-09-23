@@ -188,6 +188,14 @@ see Status below.
       Previously they were only `@st.cache_data`-memoized, so every app restart re-hit the
       live NHL API (rate-limited) to rebuild them. "Recompute draft board" rebuilds and
       re-saves all three now, not just the F/D board.
+- [x] Keepers (K1 in `backlog.md`): a manager's last pick is his keeper, kept into the next
+      season as his **last-round pick** (he skips the final round); skaters only, one per manager,
+      no season limit. Entered before the draft in the sidebar "Keepers from last season" box,
+      stored in `state/seasons/<season>/keepers.json` apart from live picks (no pick_number, not
+      touched by undo). `draft_state.reserved_slots` derives each keeper's final-round snake slot
+      from the current order + roster size (`total_rounds` = F+D+G+TEAM slots), and `next_slot`
+      skips them. `drafted_player_ids`/`roster_picks` include keepers, so they're off the board and
+      count toward roster limits and "My Pool". League rules and remaining ideas: `backlog.md`.
 
 ## Setup
 ```

@@ -288,6 +288,42 @@ def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: st
         st.markdown(st.session_state[result_key])
 
 
+def keepers_form(season: str, board: pd.DataFrame, options: list[str], labels: dict) -> None:
+    """Keepers carried over from last season, entered before the draft. Each
+    one takes his manager's final-round turn (the snake skips it) and a F/D
+    roster spot -- see draft_state's module docstring."""
+    keepers = draft_state.load_keepers(season)
+    with st.sidebar.expander(f"Keepers from last season ({len(keepers)})", expanded=False):
+        for _, k in keepers.iterrows():
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"**{labels.get(k['manager'], k['manager'])}**: {k['player_name']} ({k['pos_group']})")
+            if col2.button("✕", key=f"remove_keeper_{k['manager']}", help="Remove this keeper"):
+                draft_state.remove_keeper(season, k["manager"])
+                st.rerun()
+
+        drafted = draft_state.drafted_player_ids(season)
+        candidates = board[board["pos_group"].isin(["F", "D"]) & ~board["player_id"].isin(drafted)]
+        candidates = candidates.sort_values("Player").set_index("player_id")
+        names = {
+            pid: f"{r.Player} ({r.Team}, {r.pos_group})"
+            for pid, r in candidates[["Player", "Team", "pos_group"]].iterrows()
+        }
+        with st.form("keeper_form", clear_on_submit=True):
+            manager = st.selectbox("Manager", options, format_func=lambda m: labels.get(m, m))
+            player_id = st.selectbox(
+                "Keeper", list(names), index=None, placeholder="Type a player name", format_func=names.get
+            )
+            submitted = st.form_submit_button("Set keeper")
+        if submitted and player_id is not None:
+            row = candidates.loc[player_id]
+            try:
+                draft_state.set_keeper(season, player_id, row["Player"], row["pos_group"], manager)
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+        st.caption("A manager holding a keeper skips the final round. Setting a new one replaces his previous keeper.")
+
+
 ROSTER_SETTING_KEY = {"F": "forwards", "D": "defense", "G": "goalies", "TEAM": "team_slots"}
 
 
@@ -307,8 +343,7 @@ def pick_form(
     # pick, while a manual override sticks until the pick is made.
     active = draft_state.active_manager(season)
     index = options.index(active) if active in options else 0
-    picks = draft_state.load_picks(season)
-    n_picks = len(picks)
+    n_picks = len(draft_state.load_picks(season))
     with st.form(f"{key_prefix}_pick_form"):
         manager = st.selectbox(
             "Drafted by",
@@ -321,6 +356,7 @@ def pick_form(
         submitted = st.form_submit_button(f"Draft {player_name}" if enabled else "Draft", disabled=not enabled)
     if submitted and enabled:
         limit = settings[ROSTER_SETTING_KEY[pos_group]]
+        picks = draft_state.roster_picks(season)  # keepers take a roster spot too
         have = ((picks["manager"] == manager) & (picks["pos_group"] == pos_group)).sum()
         if have >= limit:
             st.error(
@@ -469,13 +505,15 @@ def forwards_defense_tab(
         render_compare(selected, all_seasons, key_prefix="fd")
 
     with st.expander("Show drafted forwards/defense"):
-        picks = draft_state.load_picks(season)
+        picks = draft_state.roster_picks(season)
         drafted_board = board[board["player_id"].isin(drafted)].merge(
-            picks[["player_id", "manager", "pick_number"]], on="player_id", how="left"
+            picks[["player_id", "manager", "pick_number", "keeper"]], on="player_id", how="left"
         )
         drafted_board["manager"] = drafted_board["manager"].map(lambda m: labels.get(m, m))
         st.dataframe(
-            drafted_board[["Player", "Team", "Pos", "manager", "pick_number"]].sort_values("pick_number"),
+            drafted_board[["Player", "Team", "Pos", "manager", "pick_number", "keeper"]].sort_values(
+                "pick_number", na_position="first"
+            ),
             hide_index=True,
             width="stretch",
         )
@@ -578,8 +616,8 @@ def my_pool_tab(season: str, labels: dict, settings: dict) -> None:
         "G": settings["goalies"],
         "TEAM": settings["team_slots"],
     }
-    picks = draft_state.load_picks(season)
-    mine = picks[picks["manager"] == "me"].sort_values("pick_number")
+    picks = draft_state.roster_picks(season)
+    mine = picks[picks["manager"] == "me"].sort_values("pick_number", na_position="first")
 
     st.subheader(labels.get("me", "me"))
     cols = st.columns(len(roster_targets))
@@ -597,13 +635,20 @@ def my_pool_tab(season: str, labels: dict, settings: dict) -> None:
             continue
         st.write(f"**{label}**")
         st.dataframe(
-            sub[["pick_number", "player_name"]].rename(columns={"pick_number": "Pick #", "player_name": "Player"}),
+            sub[["pick_number", "player_name", "keeper"]].rename(
+                columns={"pick_number": "Pick #", "player_name": "Player", "keeper": "Keeper"}
+            ),
             hide_index=True,
             width="stretch",
         )
 
 
 def draft_log_tab(season: str, labels: dict) -> None:
+    keepers = draft_state.load_keepers(season)
+    if not keepers.empty:
+        st.write("**Keepers** (final-round picks, made before the draft)")
+        keepers = keepers.assign(manager=keepers["manager"].map(lambda m: labels.get(m, m)))
+        st.dataframe(keepers[["player_name", "pos_group", "manager"]], hide_index=True, width="stretch")
     picks = draft_state.load_picks(season).sort_values("pick_number", ascending=False).copy()
     if picks.empty:
         st.write("No picks yet.")
@@ -673,16 +718,19 @@ def main() -> None:
 
     order = draft_state.load_draft_order(season)
     if order:
-        slot = draft_state.next_slot(picks)
+        reserved = draft_state.reserved_slots(season, order)
+        slot = draft_state.next_slot(picks, reserved)
         on_clock = draft_state.snake_manager(order, slot)
-        upcoming = draft_state.snake_manager(order, slot + 1)
+        upcoming = draft_state.snake_manager(order, draft_state.slot_after(slot + 1, reserved))
         st.info(
             f"On the clock: **{labels.get(on_clock, on_clock)}** -- pick #{len(picks) + 1}, "
-            f"round {slot // len(order) + 1}. Next: {labels.get(upcoming, upcoming)}"
+            f"round {slot // len(order) + 1} of {draft_state.total_rounds(settings)}. "
+            f"Next: {labels.get(upcoming, upcoming)}"
         )
 
     board = get_board(season, settings)
     all_seasons = get_all_seasons()
+    keepers_form(season, board, options, labels)
 
     tab_fd, tab_g, tab_teams, tab_mypool, tab_log = st.tabs(
         ["Forwards & Defense", "Goalies", "Teams", "My Pool", "Draft Log"]
