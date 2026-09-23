@@ -1,0 +1,47 @@
+[
+  {
+    "player_id": "mackina01",
+    "player_name": "Nathan MacKinnon",
+    "pos_group": "F",
+    "manager": "Lacoste",
+    "pick_number": 1,
+    "timestamp": "2026-09-23T13:47:47",
+    "slot": 0
+  },
+  {
+    "player_id": "celebma01",
+    "player_name": "Macklin Celebrini",
+    "pos_group": "F",
+    "manager": "Louis",
+    "pick_number": 2,
+    "timestamp": "2026-09-23T13:47:51",
+    "slot": 1
+  },
+  {
+    "player_id": "mcdavco01",
+    "player_name": "Connor McDavid",
+    "pos_group": "F",
+    "manager": "me",
+    "pick_number": 3,
+    "timestamp": "2026-09-23T13:47:54",
+    "slot": 2
+  },
+  {
+    "player_id": "vasilan02",
+    "player_name": "Andrei Vasilevskiy",
+    "pos_group": "G",
+    "manager": "me",
+    "pick_number": 4,
+    "timestamp": "2026-09-23T16:08:54",
+    "slot": 3
+  },
+  {
+    "player_id": "FLA",
+    "player_name": "Florida Panthers",
+    "pos_group": "TEAM",
+    "manager": "Louis",
+    "pick_number": 5,
+    "timestamp": "2026-09-23T16:09:16",
+    "slot": 4
+  }
+]

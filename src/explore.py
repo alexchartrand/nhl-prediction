@@ -21,7 +21,7 @@ from mistralai.client import Mistral
 
 load_dotenv()
 
-MISTRAL_MODEL = "zai-glm-latest"
+MISTRAL_MODEL = "mistral-medium-latest"
 
 
 class ExploreError(Exception):
