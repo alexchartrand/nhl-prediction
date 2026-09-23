@@ -515,7 +515,7 @@ def forwards_defense_tab(
     uncheck_all_button("fd_table", disabled=selected.empty)
 
     display_cols = [
-        "Player", "Team", "Pos", "Age", "GP", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
+        "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP", "Injury"
     ]
     st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
@@ -574,7 +574,7 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
         }
     )
     display_cols = [
-        "Player", "Team", "GP", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
+        "Player", "Team", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
     ]
     st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
     render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
