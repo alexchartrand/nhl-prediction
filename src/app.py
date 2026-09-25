@@ -85,6 +85,7 @@ def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
     board.to_csv(path, index=False)
     st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
     st.session_state["injury_feed_ok"] = board.attrs.get("injury_feed_ok", True)
+    st.session_state["espn_projections_ok"] = board.attrs.get("espn_projections_ok", True)
     return board
 
 
@@ -109,9 +110,10 @@ def get_board(season: str, settings: dict) -> pd.DataFrame:
     path = board_path(season)
     if path.exists():
         board = pd.read_csv(path)
-        # Boards saved before the NHL.com projection / ESPN injury / keeper
-        # columns existed get rebuilt once so they (and the NHL.com-only rookies) show up.
-        if {"nhl_projection", "injury", "future_value"} <= set(board.columns):
+        # Boards saved before the NHL.com projection / ESPN injury / keeper /
+        # ESPN projection columns existed get rebuilt once so they (and the
+        # NHL.com-only rookies) show up.
+        if {"nhl_projection", "injury", "future_value", "espn_projection"} <= set(board.columns):
             return board
     return _rebuild_board(season, settings)
 
@@ -132,8 +134,8 @@ def get_goalies(season: str) -> pd.DataFrame:
     if path.exists():
         pool = pd.read_csv(path)
         # Saved before goalies were converted from wins to fantasy points,
-        # or before the ESPN injury columns.
-        if {"pts_per_win", "injury"} <= set(pool.columns):
+        # or before the ESPN injury / projection columns.
+        if {"pts_per_win", "injury", "blended_wins"} <= set(pool.columns):
             return pool
     return _rebuild_goalies(season)
 
@@ -311,15 +313,24 @@ def render_compare(rows: pd.DataFrame, all_seasons: pd.DataFrame, key_prefix: st
         chart_df = pd.concat(chart_series, axis=1).sort_index()
         st.line_chart(chart_df, color=COMPARE_LINE_COLORS[: len(chart_series)])
 
-    result_key = f"{key_prefix}_explore_result"
-    if st.button("Explore", key=f"{key_prefix}_explore_btn"):
-        contexts = [
+    explore_button(
+        lambda: [
             explore.build_player_context(row, player_history(row["player_id"], row.get("pos_group", "G"), all_seasons))
             for _, row in rows.iterrows()
-        ]
+        ],
+        key_prefix,
+    )
+
+
+def explore_button(build_contexts, key_prefix: str, subject: str = "player") -> None:
+    """The "Explore" button and its last result (explore.explore_players).
+    ``build_contexts`` is only called on click, so the grounding blocks
+    aren't built on every rerun."""
+    result_key = f"{key_prefix}_explore_result"
+    if st.button("Explore", key=f"{key_prefix}_explore_btn"):
         with st.spinner("Searching the web and summarizing..."):
             try:
-                st.session_state[result_key] = explore.explore_players(contexts)
+                st.session_state[result_key] = explore.explore_players(build_contexts(), subject=subject)
             except explore.ExploreError as e:
                 st.session_state[result_key] = None
                 st.error(str(e))
@@ -541,7 +552,10 @@ def forwards_defense_tab(
     if len(name_query) >= 2:
         filtered = filtered[filtered["Player"].str.contains(name_query, case=False, na=False)]
     filtered = filtered.rename(
-        columns={"nhl_projection": "NHL.com Projection", "injury": "Injury", "keeper_value": "Keeper Value"}
+        columns={
+            "nhl_projection": "NHL.com Projection", "espn_projection": "ESPN Projection", "injury": "Injury",
+            "keeper_value": "Keeper Value",
+        }
     ).reset_index(drop=True)
 
     rows = [r for r in selection_rows("fd_table") if r < len(filtered)]
@@ -580,8 +594,8 @@ def forwards_defense_tab(
         uncheck_all_button("fd_table", disabled=selected.empty)
 
         display_cols = [
-            "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "pos_rank", "VORP",
-            "Keeper Value", "Injury",
+            "Player", "Team", "Pos", "Age", "Notes", "predicted_points", "NHL.com Projection", "ESPN Projection",
+            "pos_rank", "VORP", "Keeper Value", "Injury",
         ]
         st.caption(f"{len(filtered)} available players shown -- check up to 3 to compare, or check exactly 1 to draft")
         render_selectable_table(filtered, display_cols, key=table_key("fd_table"), selection_mode="multi-row")
@@ -637,12 +651,14 @@ def goalies_tab(season: str, all_seasons: pd.DataFrame, options: list[str], labe
 
         goalies = goalies.rename(
             columns={
-                "projected_wins": "Projected Wins", "pts_per_win": "Pts/Win", "predicted_points": "Projected Points",
+                "projected_wins": "NHL.com Wins", "espn_wins": "ESPN Wins", "blended_wins": "Avg Wins",
+                "pts_per_win": "Pts/Win", "predicted_points": "Projected Points",
                 "injury": "Injury",
             }
         )
         display_cols = [
-            "Player", "Team", "Projected Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes", "Injury"
+            "Player", "Team", "NHL.com Wins", "ESPN Wins", "Avg Wins", "Pts/Win", "Projected Points", "pos_rank", "VORP", "Notes",
+            "Injury",
         ]
         st.caption(f"{len(goalies)} available goalies shown -- check up to 3 to compare, or check exactly 1 to draft")
         render_selectable_table(goalies, display_cols, key=table_key("g_table"), selection_mode="multi-row")
@@ -674,19 +690,23 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
     teams = teams.reset_index(drop=True)
 
     rows = [r for r in selection_rows("team_table") if r < len(teams)]
-    selected = teams.iloc[rows[0]] if rows else None
+    selected = teams.iloc[rows]
+    if len(selected) > 3:
+        st.warning("Up to 3 teams can be explored at once -- showing the first 3 checked.")
+        selected = selected.iloc[:3]
 
     table_col, panel = pick_panel_columns("team")
     with panel:
-        if selected is not None:
-            pick_form(season, selected["player_id"], selected["Team"], "TEAM", options, labels, key_prefix="team", settings=settings)
+        if len(selected) == 1:
+            row = selected.iloc[0]
+            pick_form(season, row["player_id"], row["Team"], "TEAM", options, labels, key_prefix="team", settings=settings)
         else:
             pick_form(season, None, None, None, options, labels, key_prefix="team", settings=settings)
 
     with table_col:
         live_search_input("Search team name", key="team_name_query")
 
-        uncheck_all_button("team_table", label="Clear selection", disabled=selected is None)
+        uncheck_all_button("team_table", disabled=selected.empty)
 
         teams = teams.rename(
             columns={
@@ -699,9 +719,17 @@ def teams_tab(season: str, options: list[str], labels: dict, settings: dict) -> 
         display_cols = ["Team", "Code", "Projected Wins", "Win Δ", "Projected OTL", "Projected Points", "pos_rank", "VORP"]
         st.caption(
             f"{len(teams)} available teams shown, ranked by projected standings points "
-            "(2 x NHL.com's projected wins + league-average OT/SO losses)"
+            "(2 x NHL.com's projected wins + league-average OT/SO losses) -- check up to 3 to explore, "
+            "or check exactly 1 to draft"
         )
-        render_selectable_table(teams, display_cols, key=table_key("team_table"))
+        render_selectable_table(teams, display_cols, key=table_key("team_table"), selection_mode="multi-row")
+
+    if not selected.empty:
+        st.divider()
+        st.write("**" + " vs. ".join(selected["Team"]) + "**")
+        explore_button(
+            lambda: [explore.build_team_context(row) for _, row in selected.iterrows()], "team", subject="team"
+        )
 
     with st.expander("Show drafted teams"):
         picks = draft_state.load_picks(season)
@@ -1014,6 +1042,11 @@ def main() -> None:
         )
     if st.session_state.get("injury_feed_ok") is False:
         st.sidebar.warning("ESPN injury feed couldn't be reached -- no injury tags or adjustments. Recompute again in a bit.")
+    if st.session_state.get("espn_projections_ok") is False:
+        st.sidebar.warning(
+            "ESPN projections couldn't be reached -- no ESPN column, and rookies are ranked off NHL.com alone. "
+            "Recompute again in a bit."
+        )
 
     picks = draft_state.load_picks(season)
     if not picks.empty:

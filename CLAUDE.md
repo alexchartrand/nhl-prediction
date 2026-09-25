@@ -71,7 +71,7 @@ season's projections need a new folder and that constant bumped.
 
 ## Tech Stack
 - Python, pandas, scikit-learn, lightgbm (xgboost never used), streamlit (draft-day app),
-  requests (NHL API, ESPN injuries), mistralai + python-dotenv (the app's "Explore" button, see Status)
+  requests (NHL API, ESPN injuries/projections), mistralai + python-dotenv (the app's "Explore" button, see Status)
 - Alexandre has prior experience with `requests`-only API integrations (see Intervals.icu project) — similar pattern likely reusable if pulling live NHL stats
 
 ## Status
@@ -168,7 +168,9 @@ season's projections need a new folder and that constant bumped.
       slot; both are now ranked off NHL.com projections (see below).
 - [x] "Explore" button (`src/explore.py`): in the compare view under any table, sends the
       checked players' context to Mistral's web-search-grounded chat (`MISTRAL_MODEL`) for
-      current news/injury/form -- a summary for 1 player, a pick recommendation for 2-3.
+      current news/injury/form -- a summary for 1 player, a pick recommendation for 2-3. The Teams
+      tab has it too (check 1-3 teams; `explore.build_team_context` + a team-outlook prompt,
+      `subject="team"`), with no history view since there's no local team data beyond NHL.com's.
       Needs `MISTRAL_API_KEY` (env var or `.env`, loaded by python-dotenv). Unlike `nhl_api.py`,
       failures surface as an error in the app rather than degrading silently -- it's a manual,
       user-clicked feature with no sensible fallback. Not part of the board build.
@@ -216,7 +218,8 @@ season's projections need a new folder and that constant bumped.
 - [x] NHL.com-only rookies on the F/D board: `rank.add_projection_only_players` appends
       every NHL.com-projected F/D the model couldn't rank (no history, or only call-up games
       under `MIN_GP` -- McKenna, Martone, Stenberg, ... 10 players for 2026-27) with NHL.com's
-      projection as `predicted_points` (`source == "nhl.com"`), so they get VORP/pos_rank.
+      projection as `predicted_points` (`source == "nhl.com"`), so they get VORP/pos_rank --
+      averaged with ESPN's when ESPN projects them too (see the ESPN projections item below).
       Deliberately mixes two projection sources in one ranking. They keep their HR
       `player_id` if they have any call-up games, else a synthetic `proj_` id; Team comes
       from NHL.com; never tagged "No Team". A "Rookie" Notes tag (`notable.is_rookie`)
@@ -279,6 +282,21 @@ season's projections need a new folder and that constant bumped.
       warning before you fill your last F/D slot with a goalie/team still open -- a warning only,
       since keeping is optional (a goalie/team last is allowed). NHL.com-only rookies' Age comes
       from the live roster `birthDate` (`nhl_api.current_birth_dates` -> `rank.fill_live_ages`).
+
+- [x] ESPN projections (`src/espn_projections.py`): ESPN Fantasy's season projections from
+      `lm-api-reads.fantasy.espn.com` (the JSON API behind fantasy.espn.com/hockey/players/projections;
+      unauthenticated, server-side filtered to ~1 MB). Points (G+A, no SHG) for F/D, wins for G.
+      Shown as "ESPN Projection" (F/D table) and "ESPN Wins" (goalie table). NHL.com-only rookies'
+      `predicted_points` = mean(NHL.com, ESPN), NHL.com alone when ESPN has none. Goalies (no model
+      feeds the app) likewise: `blended_wins` = mean of both win totals ("Avg Wins"), NHL.com alone
+      for the ~25 of 75 ESPN doesn't project (backups well below replacement), then x pts/win and
+      the injury scaling as before. ESPN only projects its ~380
+      draft-ranked players, so for 2026-27 just McKenna (63/42) and Stenberg (61/24) get averaged;
+      Martone (68) etc. are unranked by ESPN and keep NHL.com's number. Season year =
+      `rank.ESPN_SEASON_YEAR` (season end year, derived from `LATEST_SEASON`). Degrades like the
+      injury feed: ESPN down -> no column, rookies on NHL.com alone, sidebar warning. Comparison at
+      the time (2026-09-25): ESPN vs NHL.com Spearman 0.89 F / 0.90 D, NHL.com ~5 pts higher on
+      average, far higher on rookies; this repo's model vs ESPN 0.94 F / 0.93 D. Goalie wins 0.77.
 
 ## Setup
 ```

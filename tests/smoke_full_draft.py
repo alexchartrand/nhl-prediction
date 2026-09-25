@@ -123,7 +123,7 @@ def build_boards_directly(season: str, settings: dict, live: bool) -> None:
     paths["draft"].parent.mkdir(parents=True, exist_ok=True)
     board = rank.build_draft_board(
         teams=settings["num_managers"], roster=roster(settings),
-        fetch_live_team_changes=live, fetch_live_injuries=live,
+        fetch_live_team_changes=live, fetch_live_injuries=live, fetch_espn_projections=live,
     )
     board.to_csv(paths["draft"], index=False)
     g = goalies_module.load_scored_goalies()

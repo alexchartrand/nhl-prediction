@@ -236,7 +236,7 @@ if __name__ == "__main__":
     settings = draft_state.DEFAULT_SETTINGS
     board = rank.build_draft_board(
         teams=settings["num_managers"], roster={"F": settings["forwards"], "D": settings["defense"]},
-        fetch_live_team_changes=False, fetch_live_injuries=False,
+        fetch_live_team_changes=False, fetch_live_injuries=False, fetch_espn_projections=False,
     )
     board["keeper_value"] = keeper_value(board)
     print(f"\ntop keeper values at {settings['num_managers']} managers (full board, before any pick):")

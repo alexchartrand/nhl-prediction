@@ -1,4 +1,4 @@
-"""On-demand player research via Mistral's web-search-grounded chat.
+"""On-demand player and team research via Mistral's web-search-grounded chat.
 
 Manual, user-clicked feature (the "Explore" button in app.py) -- not part of the
 board build pipeline, so unlike nhl_api.py's "never raise" convention, a failure
@@ -64,31 +64,63 @@ def build_player_context(row: pd.Series, hist: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def explore_players(contexts: list[str]) -> str:
-    """Summarizes (1 player) or compares and recommends (2-3 players) using
-    Mistral's web-search tool for current news/injury/form. Returns markdown.
-    Raises ExploreError on any failure (missing key, network, API error)."""
-    if not contexts:
-        raise ExploreError("No players selected.")
+def build_team_context(row: pd.Series) -> str:
+    """Grounding block for one NHL team (a row of draft_pool.team_pool) --
+    NHL.com's projection is the only local data there is for teams."""
+    lines = [f"Team: {row['Team']} ({row.get('Code', '')})"]
+    wins = row.get("projected_wins")
+    if pd.notna(wins):
+        delta = row.get("win_delta")
+        change = f" ({int(delta):+d} vs last season)" if pd.notna(delta) else ""
+        lines.append(f"NHL.com projected wins: {int(wins)}{change}")
+    points = row.get("predicted_points")
+    if pd.notna(points):
+        lines.append(f"Projected standings points: {points:.0f}")
+    return "\n".join(lines)
 
-    players_block = "\n\n".join(f"Player {i + 1}:\n{c}" for i, c in enumerate(contexts))
-    scoring_note = (
+
+# subject -> (label, scoring note, what to search the web for, pronoun)
+_SUBJECTS = {
+    "player": (
+        "Player",
         "This is for a fantasy hockey pool scored as goals + assists + 1 bonus "
-        "point per short-handed goal (skaters); pool has 9F/5D/1G/1TEAM rosters."
-    )
+        "point per short-handed goal (skaters); pool has 9F/5D/1G/1TEAM rosters.",
+        "current status: recent form, any injury/IR status, and any notable recent news",
+        "him",
+    ),
+    "team": (
+        "Team",
+        "This is for a fantasy hockey pool where each manager drafts one NHL team, "
+        "scored on that team's regular-season standings points (2 per win, 1 per "
+        "OT/shootout loss); pool has 9F/5D/1G/1TEAM rosters.",
+        "outlook for this regular season: offseason roster changes, goaltending, "
+        "key injuries, and any notable recent news",
+        "it",
+    ),
+}
+
+
+def explore_players(contexts: list[str], subject: str = "player") -> str:
+    """Summarizes (1 player/team) or compares and recommends (2-3) using
+    Mistral's web-search tool for current news/injury/form. ``subject`` is
+    "player" or "team" (see _SUBJECTS). Returns markdown. Raises
+    ExploreError on any failure (missing key, network, API error)."""
+    label, scoring_note, search_for, pronoun = _SUBJECTS[subject]
+    if not contexts:
+        raise ExploreError(f"No {label.lower()}s selected.")
+
+    block = "\n\n".join(f"{label} {i + 1}:\n{c}" for i, c in enumerate(contexts))
 
     if len(contexts) == 1:
         prompt = (
-            f"{scoring_note}\n\n{players_block}\n\n"
-            "Search the web for this player's current status: recent form, any "
-            "injury/IR status, and any notable recent news. Give a concise summary "
-            "(a few sentences) useful for deciding whether to draft him now."
+            f"{scoring_note}\n\n{block}\n\n"
+            f"Search the web for this {label.lower()}'s {search_for}. Give a concise summary "
+            f"(a few sentences) useful for deciding whether to draft {pronoun} now."
         )
     else:
         prompt = (
-            f"{scoring_note}\n\n{players_block}\n\n"
-            "Search the web for each player's current status: recent form, any "
-            "injury/IR status, and any notable recent news. Then recommend which "
+            f"{scoring_note}\n\n{block}\n\n"
+            f"Search the web for each {label.lower()}'s {search_for}. Then recommend which "
             "one to draft first for this pool, with brief reasoning referencing "
             "both the local stats above and what you found on the web."
         )

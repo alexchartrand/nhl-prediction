@@ -21,10 +21,12 @@ the output show when that fallback kicked in.
 Rookies with no usable NHL history (none, or only a few call-up games below
 ``MIN_GP``) can't be predicted by the model. Those NHL.com projects anyway
 (``data/nhl 2026-2027 projections/fowards.txt``/``defense.txt``) are added
-with NHL.com's fantasy-point projection standing in as ``predicted_points``
-(``source == "nhl.com"``), so they get a VORP and a board rank alongside
-modeled players -- two different projection sources in one ranking. Every
-player also carries ``nhl_projection`` for side-by-side reference.
+with an outside projection standing in as ``predicted_points``
+(``source == "nhl.com"``): the mean of NHL.com's and ESPN's
+(espn_projections.py) when ESPN projects him too, else NHL.com's alone --
+so they get a VORP and a board rank alongside modeled players, two
+different projection sources in one ranking. Every player also carries
+``nhl_projection``/``espn_projection`` for side-by-side reference.
 
 Players on ESPN's live injury/suspension list (espn_injuries.py) have
 ``predicted_points`` scaled down by the share of the season they're expected
@@ -47,6 +49,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import espn_injuries
+import espn_projections
 import keeper
 import loading
 import nhl_api
@@ -66,6 +69,9 @@ MODELED_POSITIONS = ("F", "D")
 # season was a washout." Kept small since there's no way to tell an
 # injured-but-active player from a retired one beyond recency.
 MAX_SEASONS_BACK = 1
+# ESPN names a season by the year it ends: 2027 for the 2026-27 season
+# being drafted (the one after LATEST_SEASON).
+ESPN_SEASON_YEAR = loading._season_start_year(LATEST_SEASON) + 2
 
 
 def fit_production_models(pairs: pd.DataFrame, df_all: pd.DataFrame) -> dict:
@@ -94,11 +100,19 @@ def predict_upcoming(models: dict, df_all: pd.DataFrame, as_of_season: str = LAT
 
 
 def add_projection_only_players(
-    predicted: pd.DataFrame, df_all: pd.DataFrame, as_of_season: str = LATEST_SEASON
+    predicted: pd.DataFrame,
+    df_all: pd.DataFrame,
+    as_of_season: str = LATEST_SEASON,
+    espn: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Adds ``nhl_projection`` to every modeled player, and appends one row
-    per NHL.com-projected F/D the model couldn't rank, with that projection
-    as ``predicted_points``. Such a player keeps his Hockey-Reference
+    """Adds ``nhl_projection``/``espn_projection`` to every modeled player,
+    and appends one row per NHL.com-projected F/D the model couldn't rank.
+    That row's ``predicted_points`` is the mean of NHL.com's and ESPN's
+    projections -- NHL.com's alone when ESPN (``espn``, from
+    espn_projections.fetch_projections; None = unavailable) doesn't project
+    him. The two disagree most on exactly these players (NHL.com runs well
+    above ESPN on rookies), and averaging two independent forecasts beats
+    trusting either one. Such a player keeps his Hockey-Reference
     ``player_id``/Age/GP if he has any history (a few call-up games), so
     season history still works in the app; otherwise he gets a synthetic
     ``proj_`` id (same convention as draft_pool.goalie_pool). Team always
@@ -130,7 +144,16 @@ def add_projection_only_players(
             hist = latest.loc[int(h)]
             row.update({loading.ID_COL: hist[loading.ID_COL], "Age": hist["Age"], "GP": hist["GP"], "Pos": hist["Pos"]})
         rows.append(row)
-    return pd.concat([predicted, pd.DataFrame(rows)], ignore_index=True)
+    out = pd.concat([predicted, pd.DataFrame(rows)], ignore_index=True)
+
+    out["espn_projection"] = float("nan")
+    if espn is not None:
+        espn = espn[espn["pos_group"].isin(MODELED_POSITIONS)].reset_index(drop=True)
+        espn_idx = nhl_projections.match_projection_rows(out, espn)
+        out["espn_projection"] = espn["espn_projection"].reindex(espn_idx.astype("float").values).values
+    blend = (out["source"] == "nhl.com") & out["espn_projection"].notna()
+    out.loc[blend, "predicted_points"] = (out.loc[blend, "nhl_projection"] + out.loc[blend, "espn_projection"]) / 2
+    return out
 
 
 def add_vorp(df: pd.DataFrame, teams: int, roster: dict, filled: dict | None = None) -> pd.DataFrame:
@@ -180,12 +203,16 @@ def build_draft_board(
     roster: dict,
     fetch_live_team_changes: bool = True,
     fetch_live_injuries: bool = True,
+    fetch_espn_projections: bool = True,
 ) -> pd.DataFrame:
     """``fetch_live_team_changes=False`` skips the live NHL API roster check
-    (see nhl_api.py) and ``fetch_live_injuries=False`` the ESPN injury feed
-    (espn_injuries.py), for a fully deterministic, network-free board. A
-    failed or skipped fetch degrades to no team-change / injury tags (and no
-    injury point adjustment), nothing else changes.
+    (see nhl_api.py), ``fetch_live_injuries=False`` the ESPN injury feed
+    (espn_injuries.py) and ``fetch_espn_projections=False`` ESPN's season
+    projections (espn_projections.py), for a fully deterministic,
+    network-free board. A failed or skipped fetch degrades to no team-change
+    / injury tags (and no injury point adjustment) / no ESPN column, with
+    NHL.com-only rookies ranked off NHL.com's number alone; nothing else
+    changes.
 
     ``teams``/``roster`` set the pool size and F/D roster slots that drive
     the VORP replacement level (see add_vorp) -- callers with a
@@ -195,7 +222,8 @@ def build_draft_board(
         df_all, feature_cols=FEATURE_COLS + ["Player", "pos_group"], min_feature_gp=MIN_GP
     )
     models = fit_production_models(pairs, df_all)
-    predicted = add_projection_only_players(predict_upcoming(models, df_all), df_all)
+    espn = espn_projections.fetch_projections(ESPN_SEASON_YEAR) if fetch_espn_projections else None
+    predicted = add_projection_only_players(predict_upcoming(models, df_all), df_all, espn=espn)
     if fetch_live_injuries:
         predicted, injury_feed_ok = espn_injuries.apply_live_injuries(predicted)
     else:
@@ -232,7 +260,7 @@ def build_draft_board(
     cols = [
         loading.ID_COL, "Player", "Team", "Pos", "pos_group", "Age", "GP",
         "feature_season", "seasons_back",
-        "predicted_points", "healthy_points", "games_missed", "nhl_projection", "source", "pos_rank", "VORP",
+        "predicted_points", "healthy_points", "games_missed", "nhl_projection", "espn_projection", "source", "pos_rank", "VORP",
         "next_season_points", "future_value",
         "fragile", "trend", "team_change", "rookie", "Notes", "injury",
     ]
@@ -241,6 +269,7 @@ def build_draft_board(
     # the same process, to warn if the live team-change check was cut short.
     result.attrs["team_fetch_complete"] = team_fetch_complete
     result.attrs["injury_feed_ok"] = injury_feed_ok
+    result.attrs["espn_projections_ok"] = espn is not None or not fetch_espn_projections
     return result
 
 
