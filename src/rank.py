@@ -59,7 +59,6 @@ import scoring
 from features import FEATURE_COLS, MIN_GP, load_scored_seasons
 from train import fit_calibration, full_length_seasons, make_elasticnet
 
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "output" / "draft_board.csv"
 LATEST_SEASON = "2025_2026"
 # Positions we have a model for. League shape (pool size, roster slots) is not
 # fixed here -- it lives in each season's settings.json (draft_state.load_settings).
@@ -276,15 +275,21 @@ def build_draft_board(
 if __name__ == "__main__":
     import draft_state
 
+    # Same file the app's "Recompute draft board" writes for the most recently
+    # created season; with no season yet, just print the board.
     seasons = draft_state.list_seasons()
     settings = draft_state.load_settings(seasons[0]) if seasons else draft_state.DEFAULT_SETTINGS
     board = build_draft_board(
         teams=settings["num_managers"],
         roster={"F": settings["forwards"], "D": settings["defense"]},
     )
-    OUTPUT_PATH.parent.mkdir(exist_ok=True)
-    board.to_csv(OUTPUT_PATH, index=False)
-    print(f"wrote {len(board)} players to {OUTPUT_PATH}\n")
+    if seasons:
+        path = draft_state.board_path(seasons[0], "draft")
+        path.parent.mkdir(exist_ok=True, parents=True)
+        board.to_csv(path, index=False)
+        print(f"wrote {len(board)} players to {path}\n")
+    else:
+        print("no season created yet (see the app) -- board not saved\n")
 
     stale = board[board["seasons_back"] > 0]
     print(f"{len(stale)} players ranked off a season other than {LATEST_SEASON} (injury/limited GP fallback):")

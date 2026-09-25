@@ -109,9 +109,9 @@ Launch the live draft-day app (or double-click `run_app.bat`):
 .venv/Scripts/python.exe -m streamlit run src/app.py
 ```
 
-The app builds and saves its boards on first load
-(`output/draft_board_<season>.csv`, `goalie_board_<season>.csv`,
-`team_board_<season>.csv`); the sidebar's **Recompute draft board** button
+The app builds and saves its boards on first load, with the season's other
+state (`state/seasons/<season>/draft_board/skaters.csv`, `goalies.csv`,
+`teams.csv`); the sidebar's **Recompute draft board** button
 rebuilds all three (refits the models, hits the live NHL API).
 
 Retrain / re-evaluate the skater models (ElasticNet vs LightGBM, plus
@@ -125,9 +125,9 @@ Goalie model evaluation:
 .venv/Scripts/python.exe src/goalies.py
 ```
 
-`src/rank.py` run directly prints a board and writes
-`output/draft_board.csv` — useful for a quick look, but the app doesn't read
-that file.
+`src/rank.py` run directly prints a board and saves it as the most recently
+created season's `draft_board/skaters.csv` (same file, same settings as the
+app's F/D rebuild) — useful for a quick look without launching the app.
 
 The **Explore** button needs a `MISTRAL_API_KEY` environment variable
 (`.env` file, loaded via `python-dotenv`). Everything else needs no secrets.
@@ -156,9 +156,11 @@ Each fall, once Hockey-Reference has a full prior-season export available:
    gap between the two has been narrowing as seasons are added; if LightGBM
    ever overtakes ElasticNet on holdout, swap `rank.py`'s production model
    (`from train import make_elasticnet` → the LightGBM equivalent).
-5. **Start a new season in the app** (sidebar → "+ New season..."), set up
-   managers/draft order and settings, enter keepers, then hit **Recompute
-   draft board**. Old seasons stay selectable; nothing needs deleting.
+5. **Start a new season in the app** (sidebar → "+ New season..."): enter
+   its name and league settings (managers, roster slots -- prefilled from the
+   last season) in the same form, so the first board build already uses them.
+   Then set up managers/draft order, enter keepers, and hit **Recompute draft
+   board** if anything changed the settings afterwards. Old seasons stay selectable; nothing needs deleting.
 6. **Re-verify the NHL API still works** (`src/nhl_api.py`) — it hits an
    unauthenticated, unofficial endpoint (`api-web.nhle.com`) that could
    change shape season to season. It degrades to "no team-change tag" on
@@ -191,8 +193,8 @@ Each fall, once Hockey-Reference has a full prior-season export available:
 data/            Hockey-Reference CSV exports (skaters, skaters-advance, goalies per season),
                  NHL.com projections folder, name-lookup CSV (unused)
 models/          Trained skater model artifacts (*.joblib), from src/train.py
-output/          Per-season draft/goalie/team boards saved by the app
-state/seasons/   Per-season draft state (picks, managers, settings, keepers JSON), from src/app.py
+state/seasons/   Per-season draft state (picks, managers, settings, keepers JSON) and computed
+                 boards (draft_board/skaters|goalies|teams.csv), from src/app.py
 backlog.md       League rules + remaining feature ideas
 run_app.bat      Launches the Streamlit app
 src/

@@ -1,6 +1,6 @@
 """Draft-day smoke test: a full 10-manager snake draft through the app's real
-code paths, in a throwaway state/output directory (the real ``state/`` and
-``output/`` are never touched).
+code paths, in a throwaway state directory (the real ``state/`` is never
+touched).
 
 Run:
     .venv/Scripts/python.exe tests/smoke_full_draft.py            # live feeds (NHL API, ESPN)
@@ -85,13 +85,11 @@ def isolate(tmp: Path) -> None:
     draft_state.SEASONS_DIR = tmp / "state" / "seasons"
     draft_state.LEGACY_PICKS_PATH = tmp / "state" / "picks.json"
     draft_state.LEGACY_MANAGERS_PATH = tmp / "state" / "managers.json"
-    rank.OUTPUT_PATH = tmp / "output" / "draft_board.csv"
+    draft_state.LEGACY_OUTPUT_DIR = tmp / "output"
 
 
 def board_paths(season: str) -> dict[str, Path]:
-    slug = draft_state.slugify(season)
-    out = rank.OUTPUT_PATH.parent
-    return {k: out / f"{k}_board_{slug}.csv" for k in ("draft", "goalie", "team")}
+    return {k: draft_state.board_path(season, k) for k in draft_state.BOARD_FILES}
 
 
 def setup_season(season: str, my_pos: int) -> list[str]:
@@ -530,7 +528,7 @@ def main() -> int:
 
     tmp = Path(tempfile.mkdtemp(prefix="draft_smoke_"))
     isolate(tmp)
-    print(f"temp state/output dir: {tmp}")
+    print(f"temp state dir: {tmp}")
     global _BOARDS
     try:
         print(f"\n== main draft: 10 managers, you at slot {args.my_pos + 1} ==")
@@ -565,6 +563,7 @@ def main() -> int:
             order = setup_season(season, pos)
             # Share the main season's boards (same settings).
             for k, p in board_paths(SEASON).items():
+                board_paths(season)[k].parent.mkdir(parents=True, exist_ok=True)
                 board_paths(season)[k].write_bytes(p.read_bytes())
             enter_keepers(season, boards, KEEPER_HOLDERS)
             fails = len(C.failures)

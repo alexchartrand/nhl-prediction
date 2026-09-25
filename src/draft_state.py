@@ -10,7 +10,8 @@ State is scoped **per season** (one pool year's draft, e.g. "2026-2027") so a
 new draft doesn't inherit last year's picks/managers, and last year's draft
 stays around to look back on. Each season gets its own directory under
 ``state/seasons/<season>/`` holding that season's ``picks.json`` and
-``managers.json`` (plus ``keepers.json``, see below). A season name is free text (the user types it, e.g. when
+``managers.json`` (plus ``settings.json``, ``keepers.json`` -- see below --
+and the computed boards under ``draft_board/``, see ``board_path``). A season name is free text (the user types it, e.g. when
 starting a new pool year) but sanitized into a filesystem-safe directory
 name via ``slugify``.
 
@@ -41,6 +42,11 @@ SEASONS_DIR = STATE_DIR / "seasons"
 LEGACY_PICKS_PATH = STATE_DIR / "picks.json"
 LEGACY_MANAGERS_PATH = STATE_DIR / "managers.json"
 LEGACY_MIGRATION_SEASON = "2026-2027"
+# Where the per-season boards lived before they moved into the season
+# directory (output/<kind>_board_<season>.csv) -- see board_path.
+LEGACY_OUTPUT_DIR = STATE_DIR.parent / "output"
+# Board kind -> file name under the season's draft_board/ directory.
+BOARD_FILES = {"draft": "skaters.csv", "goalie": "goalies.csv", "team": "teams.csv"}
 
 # ``slot`` is the pick's position in the snake sequence (0-based; see
 # snake_manager) -- normally pick_number - 1, but it differs after a manual
@@ -88,6 +94,23 @@ def _keepers_path(season: str) -> Path:
 
 def _settings_path(season: str) -> Path:
     return _season_dir(season) / "settings.json"
+
+
+def board_path(season: str, kind: str) -> Path:
+    """Where a season's computed board is saved (``kind`` is "draft" for
+    F/D, "goalie" or "team"): ``state/seasons/<season>/draft_board/``. Lives
+    with the season's other state since its VORP/pos_rank columns bake in
+    that season's settings. A board saved at the old output/ location is
+    moved here on first access, so upgrading doesn't force a rebuild (which
+    hits the live APIs)."""
+    if kind not in BOARD_FILES:
+        raise ValueError(f"unknown board kind: {kind!r}")
+    path = _season_dir(season) / "draft_board" / BOARD_FILES[kind]
+    legacy = LEGACY_OUTPUT_DIR / f"{kind}_board_{slugify(season)}.csv"
+    if not path.exists() and legacy.exists():
+        path.parent.mkdir(exist_ok=True, parents=True)
+        os.replace(legacy, path)
+    return path
 
 
 def _write_json(path: Path, data) -> None:

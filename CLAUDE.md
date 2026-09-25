@@ -8,7 +8,8 @@ Build a model to predict player fantasy points for a season-long hockey pool, to
 - Roster per manager: 9 forwards, 5 defense, 1 goalie, 1 team
 - Winner = highest total points at end of season
 - Pool size and roster slots are per-season settings (`draft_state.DEFAULT_SETTINGS`: 12
-  managers, 9F/5D/1G/1TEAM), editable in the app. Once a draft order is set, its length is
+  managers, 9F/5D/1G/1TEAM), entered in the app's "+ New season..." form (prefilled from the
+  most recent season) and editable afterwards under League settings. Once a draft order is set, its length is
   the manager count -- the real count isn't known until draft day.
 
 ## Data
@@ -101,10 +102,11 @@ season's projections need a new folder and that constant bumped.
       Replacement cutoff = managers x roster slots per position (108 F / 60 D at the default
       12 x 9F/5D), taken from the season's settings (see Pool Format). Uses ElasticNet (won
       the holdout eval) refit on all season-pairs, not just train.py's train-only split.
-      The app saves its board as `output/draft_board_<season>.csv` (rebuilt by the app's
-      "Recompute draft board" button); running `rank.py` directly writes a separate
-      `output/draft_board.csv` using the most recently created season's settings -- handy for
-      inspection, but the app doesn't read it.
+      The app saves its board as `state/seasons/<season>/draft_board/skaters.csv`
+      (`draft_state.board_path`; rebuilt by the app's "Recompute draft board" button);
+      running `rank.py` directly rebuilds that same file for the most recently created season,
+      with its settings. Boards saved under the old `output/<kind>_board_<season>.csv` layout
+      are moved in on first access.
 - [x] Injury fallback: `loading.latest_healthy_row` -- a player under `features.MIN_GP`
       games in his most recent season falls back to his last season with enough games,
       instead of being dropped or judged on a handful of games. Used both when building
@@ -227,8 +229,8 @@ season's projections need a new folder and that constant bumped.
       age <=26 -- so it also tags modeled players with thin call-up histories (Frondell,
       Cole Hutson), whose model predictions rest on 12-14 GP and run well under NHL.com's.
       `app.get_board` rebuilds a saved board that predates the `nhl_projection` column.
-- [x] Goalie/team pools now persist per-season too (`output/goalie_board_<season>.csv`,
-      `output/team_board_<season>.csv`), same pattern as `draft_board_<season>.csv`.
+- [x] Goalie/team pools now persist per-season too (`draft_board/goalies.csv`,
+      `draft_board/teams.csv` in the season's state directory), same pattern as `skaters.csv`.
       Previously they were only `@st.cache_data`-memoized, so every app restart re-hit the
       live NHL API (rate-limited) to rebuild them. "Recompute draft board" rebuilds and
       re-saves all three now, not just the F/D board.

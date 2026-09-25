@@ -64,15 +64,15 @@ def board_path(season: str) -> Path:
     columns bake in that season's num_managers/forwards/defense settings
     (see draft_state.load_settings), so one season's board can't double as
     another's."""
-    return rank.OUTPUT_PATH.parent / f"draft_board_{draft_state.slugify(season)}.csv"
+    return draft_state.board_path(season, "draft")
 
 
 def goalie_board_path(season: str) -> Path:
-    return rank.OUTPUT_PATH.parent / f"goalie_board_{draft_state.slugify(season)}.csv"
+    return draft_state.board_path(season, "goalie")
 
 
 def team_board_path(season: str) -> Path:
-    return rank.OUTPUT_PATH.parent / f"team_board_{draft_state.slugify(season)}.csv"
+    return draft_state.board_path(season, "team")
 
 
 def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
@@ -81,7 +81,7 @@ def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
         roster={"F": settings["forwards"], "D": settings["defense"]},
     )
     path = board_path(season)
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(exist_ok=True, parents=True)
     board.to_csv(path, index=False)
     st.session_state["team_fetch_complete"] = board.attrs.get("team_fetch_complete", True)
     st.session_state["injury_feed_ok"] = board.attrs.get("injury_feed_ok", True)
@@ -92,7 +92,7 @@ def _rebuild_board(season: str, settings: dict) -> pd.DataFrame:
 def _rebuild_goalies(season: str) -> pd.DataFrame:
     pool = draft_pool.goalie_pool(get_goalie_seasons())
     path = goalie_board_path(season)
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(exist_ok=True, parents=True)
     pool.to_csv(path, index=False)
     return pool
 
@@ -100,7 +100,7 @@ def _rebuild_goalies(season: str) -> pd.DataFrame:
 def _rebuild_teams(season: str) -> pd.DataFrame:
     pool = draft_pool.team_pool(get_goalie_seasons())
     path = team_board_path(season)
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(exist_ok=True, parents=True)
     pool.to_csv(path, index=False)
     return pool
 
@@ -184,9 +184,20 @@ def season_picker() -> str | None:
     choice = st.sidebar.selectbox("Draft season", options, key="season_select")
 
     if choice == NEW_SEASON_OPTION:
-        new_name = st.sidebar.text_input("New season name (e.g. 2026-2027)", key="new_season_name")
-        if st.sidebar.button("Create season") and new_name.strip():
+        # League settings are entered here, with the name, so the first board
+        # build (right after the managers are set up) already uses them.
+        # Prefilled from the most recent season, since pools rarely change shape.
+        template = draft_state.load_settings(seasons[0]) if seasons else draft_state.DEFAULT_SETTINGS
+        with st.sidebar.form("new_season"):
+            new_name = st.text_input("New season name (e.g. 2026-2027)")
+            new_settings = settings_inputs(template, managers_from_order=False)
+            submitted = st.form_submit_button("Create season")
+        if submitted and new_name.strip():
+            if draft_state.season_exists(new_name.strip()):
+                st.sidebar.error("That season already exists -- pick it from the dropdown.")
+                return None
             season = draft_state.create_season(new_name.strip())
+            draft_state.save_settings(season, new_settings)
             st.session_state["_pending_season"] = season
             st.query_params["season"] = season
             st.rerun()
@@ -245,40 +256,41 @@ def settings_form(season: str, existing: dict) -> None:
     from_order = bool(draft_state.load_draft_order(season))
     with st.sidebar.expander("League settings", expanded=False):
         with st.form("settings_form"):
-            num_managers = st.number_input(
-                "Number of managers",
-                min_value=2,
-                max_value=30,
-                value=existing["num_managers"],
-                step=1,
-                disabled=from_order,
-                help="Set by the draft order (Edit managers)." if from_order else None,
-            )
-            forwards = st.number_input(
-                "Forward roster slots", min_value=1, max_value=20, value=existing["forwards"], step=1
-            )
-            defense = st.number_input(
-                "Defense roster slots", min_value=1, max_value=20, value=existing["defense"], step=1
-            )
-            goalies = st.number_input(
-                "Goalie roster slots", min_value=0, max_value=10, value=existing["goalies"], step=1
-            )
-            team_slots = st.number_input(
-                "Team roster slots", min_value=0, max_value=10, value=existing["team_slots"], step=1
-            )
+            new_settings = settings_inputs(existing, managers_from_order=from_order)
             submitted = st.form_submit_button("Save")
         if submitted:
-            draft_state.save_settings(
-                season,
-                {
-                    "num_managers": num_managers,
-                    "forwards": forwards,
-                    "defense": defense,
-                    "goalies": goalies,
-                    "team_slots": team_slots,
-                },
-            )
+            draft_state.save_settings(season, new_settings)
             st.rerun()
+
+
+def settings_inputs(existing: dict, managers_from_order: bool) -> dict:
+    """The league-settings fields, shared by the new-season form and the
+    per-season settings form. Call inside an st.form."""
+    return {
+        "num_managers": st.number_input(
+            "Number of managers",
+            min_value=2,
+            max_value=30,
+            value=existing["num_managers"],
+            step=1,
+            disabled=managers_from_order,
+            help="Set by the draft order (Edit managers)."
+            if managers_from_order
+            else "Replaced by the draft order's length once one is entered (Edit managers).",
+        ),
+        "forwards": st.number_input(
+            "Forward roster slots", min_value=1, max_value=20, value=existing["forwards"], step=1
+        ),
+        "defense": st.number_input(
+            "Defense roster slots", min_value=1, max_value=20, value=existing["defense"], step=1
+        ),
+        "goalies": st.number_input(
+            "Goalie roster slots", min_value=0, max_value=10, value=existing["goalies"], step=1
+        ),
+        "team_slots": st.number_input(
+            "Team roster slots", min_value=0, max_value=10, value=existing["team_slots"], step=1
+        ),
+    }
 
 
 def player_history(player_id: str, pos_group: str, all_seasons: pd.DataFrame) -> pd.DataFrame:
